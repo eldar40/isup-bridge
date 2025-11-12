@@ -354,10 +354,10 @@ performance:
 
 ## 📞 Поддержка
 
-- 🐛 **Issues**: [GitHub Issues](https://github.com/your-username/isup-bridge-production/issues)
-- 📧 **Email**: support@yourcompany.ru
-- 💬 **Telegram**: [@your_support_bot](https://t.me/your_support_bot)
-- 📚 **Документация**: [Wiki](https://github.com/your-username/isup-bridge-production/wiki)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/eldar40/isup-bridge/issues)
+- 📧 **Email**: support@sova07.ru
+- 💬 **Telegram**: [@yel4489](https://t.me/el4489)
+- 📚 **Документация**: [Wiki](https://github.com/eldar40/isup-bridge/wiki)
 
 ## 🌟 Благодарности
 
