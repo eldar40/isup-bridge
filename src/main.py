@@ -311,10 +311,7 @@ class EventProcessor:
                 self.metrics.events_pending = pending_count
                 
                 # ВРЕМЕННО ОТКЛЮЧАЕМ ПОВТОРНУЮ ОТПРАВКУ
-<<<<<<< Updated upstream
-=======
                 # Просто логируем наличие pending файлов
->>>>>>> Stashed changes
                 if pending_count > 0:
                     self.logger.debug(f"📁 Найдено {pending_count} неотправленных событий (отправка отключена)")
                 
