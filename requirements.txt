@@ -1,0 +1,9 @@
+# Python dependencies
+aiohttp>=3.9.0
+PyYAML>=6.0
+asyncio>=3.4.3
+
+# Optional: для расширенной функциональности
+# prometheus-client>=0.19.0  # Метрики
+# psycopg2-binary>=2.9.0     # PostgreSQL для хранения
+# redis>=5.0.0               # Redis для кэширования
