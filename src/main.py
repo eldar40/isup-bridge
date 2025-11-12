@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Полностью готовый main.py для ISUP Bridge.
-Файл включает:
-- чтение конфигурации (config/config.yaml при наличии),
-- устойчивое логирование,
-- TCP сервер с устойчивой обработкой пакетов и fallback-ответом,
-- минимальные заглушки для isup_protocol и tenant_manager если их нет,
-- HTTP health/metrics API (если установлен aiohttp).
+Полностью готовый main.py для ISUP Bridge (обновлённый).
+В этом варианте добавлена защита от вывода парсера в stdout/stderr:
+- захват stdout/stderr при вызове parser.parse,
+- логирование вывода парсера вместо прямой печати в системный журнал,
+- fallback-ответы и устойчивая обработка ошибок.
 """
 
 import asyncio
@@ -15,6 +13,8 @@ import signal
 import logging
 import struct
 import json
+import io
+import contextlib
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -350,9 +350,20 @@ class ISUPTCPServer:
                 event = None
                 parser = getattr(self.processor, 'parser', None)
                 parse_error = None
+                # Захватываем stdout/stderr парсера, чтобы его сообщения не попадали напрямую в системный журнал
                 try:
                     if parser:
-                        event = parser.parse(data)
+                        buf_out = io.StringIO()
+                        buf_err = io.StringIO()
+                        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+                            event = parser.parse(data)
+                        out_text = buf_out.getvalue().strip()
+                        err_text = buf_err.getvalue().strip()
+                        if out_text:
+                            # Логируем вывод парсера как warning — это поможет диагностике
+                            self.logger.warning(f'Parser stdout from {client_ip}: {out_text}')
+                        if err_text:
+                            self.logger.warning(f'Parser stderr from {client_ip}: {err_text}')
                 except Exception as e:
                     parse_error = e
                     self.logger.debug(f'Ошибка парсинга пакета: {e}', exc_info=True)
