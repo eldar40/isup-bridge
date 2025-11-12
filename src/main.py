@@ -226,7 +226,7 @@ class EventProcessor:
         self.storage = storage
         self.metrics = metrics
         self.logger = logger
-        self.parser = ISUPv5Parser(strict_mode=False)
+        self.parser = ISUPv5Parser()
     
     async def process_access_event(self, event: ISUPAccessEvent, client_ip: str) -> bool:
         """Обработка события доступа (упрощенная версия без 1С)"""
