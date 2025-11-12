@@ -1,186 +1,80 @@
-# ISUP Bridge Configuration - Production Ready
-# Поддержка multi-tenant архитектуры для нескольких 1С серверов
-
-# ==================== ОСНОВНЫЕ НАСТРОЙКИ СЕРВЕРА ====================
+# ВРЕМЕННЫЙ КОНФИГ ДЛЯ ТЕСТИРОВАНИЯ
 server:
-  host: "0.0.0.0"              # Слушать на всех интерфейсах
-  port: 8080                    # Порт для ISUP протокола
-  log_level: "INFO"             # DEBUG | INFO | WARNING | ERROR
-  storage_path: "./pending_events"
+  host: "0.0.0.0"
+  port: 8080
+  log_level: "DEBUG"  # ВКЛЮЧИТЬ DEBUG!
+  storage_path: "/opt/isup_bridge/storage"
   max_pending_days: 30
-  health_check_port: 8081       # HTTP API для мониторинга
+  health_check_port: 8081
 
-# ==================== MULTI-TENANT КОНФИГУРАЦИЯ ====================
-# Каждый tenant = отдельный 1С сервер
-# Можно добавлять неограниченное количество тенантов
+objects:
+  - object_id: "test_object"
+    name: "Тестовый объект"
+    description: "Для диагностики"
+    address: "Тестовый адрес"
+    
+    c1_server:
+      base_url: "https://1c-test.yourcompany.ru"
+      endpoint: "/hs/access/events"
+      username: "test"
+      password: "test"
+      timeout: 30
+      max_retries: 3
+      retry_delay: 5
+    
+    # РАЗРЕШАЕМ ВСЕ УСТРОЙСТВА ДЛЯ ТЕСТА
+    devices:
+      - device_id: "343831383733390D"  # Старый device_id из логов
+        serial_number: "F-KD-3323PMFC-001"
+        description: "Тестовый контроллер"
+        type: "turnstile"
+        direction: "both"
+        location: "Тестовое расположение"
+        floor: "1"
+      
+      - device_id: "GA4818739"  # Номер карты как device_id
+        serial_number: "F-KD-3323PMFC-002"
+        description: "Тестовый контроллер 2"
+        type: "turnstile"
+        direction: "both"
+        location: "Тестовое расположение 2"
+        floor: "1"
+      
+      - device_id: "3"  # Просто цифра 3
+        serial_number: "F-KD-3323PMFC-003"
+        description: "Тестовый контроллер 3"
+        type: "turnstile"
+        direction: "both"
+        location: "Тестовое расположение 3"
+        floor: "1"
 
-tenants:
-  # ===== ТЕНАНТ 1: Главный офис =====
-  - tenant_id: "main_office"
-    name: "Главный офис Москва"
-    base_url: "https://1c-main.yourcompany.ru"
-    endpoint: "/hs/access/events"
-    username: "isup_bridge_user"
-    password: "CHANGE_ME_main_password"
-    timeout: 30
-    max_retries: 3
-    retry_delay: 5
-    
-    # Список ID контроллеров Hikvision для этого офиса
-    device_ids:
-      - "DS-K1T671MF001"        # Турникет 1 этаж
-      - "DS-K1T671MF002"        # Турникет 2 этаж
-      - "DS-K1T671MF003"        # Турникет парковка
-      - "MAIN-*"                # Wildcard для всех устройств начинающихся с MAIN-
+# DEFAULT КОНФИГ ДЛЯ ЛЮБЫХ ДРУГИХ УСТРОЙСТВ
+default_object:
+  object_id: "default"
+  name: "Неизвестные устройства"
+  description: "Автоматическое определение"
   
-  # ===== ТЕНАНТ 2: Филиал в СПб =====
-  - tenant_id: "spb_office"
-    name: "Филиал Санкт-Петербург"
-    base_url: "https://1c-spb.yourcompany.ru"
-    endpoint: "/hs/access/events"
-    username: "isup_bridge_user"
-    password: "CHANGE_ME_spb_password"
-    timeout: 30
-    max_retries: 3
-    retry_delay: 5
-    
-    device_ids:
-      - "DS-K1T671MF101"
-      - "DS-K1T671MF102"
-      - "SPB-*"
-  
-  # ===== ТЕНАНТ 3: Производство =====
-  - tenant_id: "production"
-    name: "Производственный цех"
-    base_url: "https://1c-prod.yourcompany.ru"
-    endpoint: "/hs/access/events"
-    username: "isup_bridge_user"
-    password: "CHANGE_ME_prod_password"
-    timeout: 30
-    max_retries: 3
-    retry_delay: 5
-    
-    device_ids:
-      - "DS-K1T671MF201"
-      - "DS-K1T671MF202"
-      - "PROD-*"
-  
-  # ===== ТЕНАНТ 4: Филиал за рубежом =====
-  - tenant_id: "foreign_office"
-    name: "Зарубежный филиал"
-    base_url: "https://1c-foreign.yourcompany.com"
-    endpoint: "/hs/access/events"
-    username: "isup_bridge_user"
-    password: "CHANGE_ME_foreign_password"
-    timeout: 45                 # Больший таймаут для международного соединения
-    max_retries: 5
-    retry_delay: 10
-    
-    device_ids:
-      - "DS-K1T671MF301"
-      - "FOREIGN-*"
-  
-  # ===== DEFAULT ТЕНАНТ =====
-  # Используется для устройств без явного маппинга
-  - tenant_id: "default"
-    name: "Default Server (fallback)"
+  c1_server:
     base_url: "https://1c-default.yourcompany.ru"
     endpoint: "/hs/access/events"
-    username: "isup_bridge_user"
-    password: "CHANGE_ME_default_password"
+    username: "default"
+    password: "default"
     timeout: 30
     max_retries: 3
     retry_delay: 5
-    
-    device_ids:
-      - "*"  # Catch-all для всех остальных устройств
 
-# ==================== БИЗНЕС-ЛОГИКА ====================
-business_logic:
-  # Автоопределение рабочих дней
-  auto_detect_workday: true
-  
-  # Рабочее время по умолчанию
-  default_work_start: "09:00"
-  default_work_end: "18:00"
-  
-  # Обеденный перерыв
-  lunch_start: "13:00"
-  lunch_end: "14:00"
-  
-  # Интеграция с расчетом зарплаты
-  enable_salary_calc: true
-  
-  # Минимальная длительность рабочего дня (часы)
-  min_work_hours: 8
-  
-  # Допуск опоздания (минуты)
-  late_tolerance_minutes: 15
-
-# ==================== МОНИТОРИНГ И АЛЕРТЫ ====================
-monitoring:
-  # Проверка здоровья 1С серверов
-  health_check_interval: 60  # секунд
-  
-  # Алерты при проблемах
-  enable_alerts: true
-  
-  # Email уведомления (опционально)
-  email_alerts:
-    enabled: false
-    smtp_host: "smtp.gmail.com"
-    smtp_port: 587
-    from_email: "alerts@yourcompany.ru"
-    to_emails:
-      - "admin@yourcompany.ru"
-      - "ops@yourcompany.ru"
-  
-  # Telegram боты (опционально)
-  telegram_alerts:
-    enabled: false
-    bot_token: "YOUR_BOT_TOKEN"
-    chat_ids:
-      - "-1001234567890"
-
-# ==================== ПРОИЗВОДИТЕЛЬНОСТЬ ====================
-performance:
-  # Максимальное количество одновременных соединений
-  max_connections: 1000
-  
-  # Размер пула соединений к 1С
-  connection_pool_size: 50
-  
-  # Таймаут чтения от контроллера (секунды)
-  read_timeout: 30
-  
-  # Размер батча для retry событий
-  retry_batch_size: 20
-  
-  # Интервал retry (секунды)
-  retry_interval: 60
-
-# ==================== БЕЗОПАСНОСТЬ ====================
 security:
-  # Белый список IP адресов контроллеров (опционально)
-  allowed_controller_ips:
-    - "192.168.1.0/24"
-    - "10.0.0.0/8"
-    # - "0.0.0.0/0"  # Разрешить все (для тестирования)
+  allowed_ips:
+    - "37.18.105.89"
+    - "0.0.0.0/0"
   
-  # TLS для 1С соединений
-  verify_ssl: true
-  
-  # Логирование чувствительных данных
-  log_sensitive_data: false
+  verify_ssl: false
 
-# ==================== ДОПОЛНИТЕЛЬНО ====================
+monitoring:
+  health_check_interval: 60
+  enable_alerts: false
+
 features:
-  # Экспорт метрик в Prometheus
-  prometheus_metrics: true
-  prometheus_port: 9090
-  
-  # GraphQL API для управления
-  graphql_api: false
-  
-  # WebSocket для real-time мониторинга
-  websocket_enabled: false
+  auto_create_objects: false
+  detailed_logging: true
+  prometheus_enabled: false

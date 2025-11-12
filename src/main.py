@@ -20,7 +20,7 @@ import aiohttp
 from aiohttp import web
 
 from isup_protocol import ISUPv5Parser, ISUPAccessEvent
-from tenant_manager import TenantManager, C1Server
+from tenant_manager import TenantManager  # Импорт TenantManager
 
 
 # ==================== КОНФИГУРАЦИЯ ====================
@@ -226,14 +226,45 @@ class EventProcessor:
         self.storage = storage
         self.metrics = metrics
         self.logger = logger
-        self.parser = ISUPv5Parser()
+        self.parser = ISUPv5Parser(strict_mode=False)
+    
+    async def process_access_event(self, event: ISUPAccessEvent, client_ip: str) -> bool:
+        """Обработка события доступа (упрощенная версия без 1С)"""
+        try:
+            # Получаем информацию об устройстве
+            device_info = self.tenant_manager.get_device_info(event.header.device_id)
+            object_info = self.tenant_manager.get_object_for_device(event.header.device_id)
+            
+            if object_info:
+                location_info = f" | Объект: {object_info.name}"
+                if device_info:
+                    location_info += f" | {device_info.get('location', 'N/A')}"
+            else:
+                location_info = " | Объект: Неизвестен"
+            
+            self.logger.info(
+                f"📨 Событие от {client_ip}: "
+                f"Устройство={event.header.device_id} | "
+                f"Карта={event.card_number} | "
+                f"Направление={event.direction.name} | "
+                f"Тип={event.access_type.name}"
+                f"{location_info}"
+            )
+            
+            # ВРЕМЕННО ОТКЛЮЧАЕМ ОТПРАВКУ В 1С
+            # await self.send_to_1c(event)
+            
+            # Просто логируем успешное получение
+            self.logger.info(f"✅ Событие получено и обработано (1С временно отключен)")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка обработки события: {e}")
+            return False
     
     async def process_raw_isup(self, raw_data: bytes, client_ip: str) -> bool:
         """
         Обработка сырых ISUP данных
-        
-        Returns:
-            True если успешно обработано
         """
         self.metrics.events_received += 1
         self.metrics.last_event_time = datetime.now()
@@ -247,60 +278,8 @@ class EventProcessor:
         
         self.metrics.events_parsed += 1
         
-        # Логирование распознанного события
-        self.logger.info(
-            f"📨 Событие от {client_ip}: "
-            f"Устройство={event.header.device_id} | "
-            f"Карта={event.card_number} | "
-            f"Направление={event.direction.name} | "
-            f"Тип={event.access_type.name}"
-        )
-        
-        # Определение тенанта
-        device_id = event.header.device_id
-        tenant = self.tenant_manager.get_tenant_for_device(device_id)
-        
-        if not tenant:
-            self.logger.warning(f"⚠️ Тенант не найден для устройства {device_id}")
-            self.metrics.events_failed += 1
-            return False
-        
-        # Подготовка данных для 1С
-        c1_data = self._prepare_1c_data(event)
-        
-        # Отправка в 1С
-        success = await self.tenant_manager.send_event(device_id, c1_data)
-        
-        if success:
-            self.metrics.events_sent += 1
-            self.logger.info(f"✅ Событие успешно отправлено в {tenant.name}")
-        else:
-            self.metrics.events_failed += 1
-            # Сохранение для повторной отправки
-            await self.storage.save(event, tenant.tenant_id)
-        
-        return success
-    
-    def _prepare_1c_data(self, event: ISUPAccessEvent) -> Dict:
-        """
-        Подготовка данных в формате для 1С:УРВ
-        
-        Формат соответствует государственной форме учета рабочего времени
-        """
-        return {
-            'employee_code': event.employee_number or f"CARD_{event.card_number}",
-            'event_timestamp': event.header.timestamp.isoformat(),
-            'event_type': 'WORK_START' if event.direction.name == 'IN' else 'WORK_END',
-            'device_id': event.header.device_id,
-            'location': 'Главный вход',  # TODO: Сделать конфигурируемым
-            'access_method': event.access_type.name,
-            'card_number': event.card_number,
-            'access_result': event.access_result.name,
-            'reader_id': event.reader_id,
-            'door_id': event.door_id,
-            'raw_data': event.raw_data.hex()[:200],
-            'system_source': 'HIKVISION_ISUP_V5'
-        }
+        # Обработка события доступа
+        return await self.process_access_event(event, client_ip)
     
     async def retry_pending_events(self):
         """Фоновая задача: повторная отправка неудачных событий"""
@@ -314,28 +293,9 @@ class EventProcessor:
                 
                 self.metrics.events_pending = pending_count
                 
-                # Обрабатываем по 20 событий за раз
-                for filepath in pending_files[:20]:
-                    event_data = await self.storage.load(filepath)
-                    
-                    if not event_data:
-                        self.storage.delete(filepath)
-                        continue
-                    
-                    tenant_id = event_data.get('tenant_id')
-                    c1_data = event_data.get('event')
-                    
-                    if not tenant_id or not c1_data:
-                        self.storage.delete(filepath)
-                        continue
-                    
-                    # Пытаемся отправить
-                    tenant = self.tenant_manager.tenants.get(tenant_id)
-                    if tenant:
-                        success = await self.tenant_manager._send_with_retry(tenant, c1_data)
-                        if success:
-                            self.storage.delete(filepath)
-                            self.metrics.events_sent += 1
+                # ВРЕМЕННО ОТКЛЮЧАЕМ ПОВТОРНУЮ ОТПРАВКУ
+                if pending_count > 0:
+                    self.logger.debug(f"📁 Найдено {pending_count} неотправленных событий (отправка отключена)")
                 
             except Exception as e:
                 self.logger.error(f"Ошибка в retry_pending: {e}", exc_info=True)
@@ -372,46 +332,54 @@ class ISUPTCPServer:
         client_ip = client_addr[0] if client_addr else 'unknown'
         
         self.metrics.connections_total += 1
-        self.logger.debug(f"📡 Новое соединение от {client_ip}")
+        self.logger.info(f"🔌 Новое подключение от {client_ip}")
         
         try:
-            # Чтение данных с таймаутом
-            raw_data = await asyncio.wait_for(
-                reader.read(8192),
-                timeout=30
-            )
-            
-            if raw_data:
-                # Обработка события
-                success = await self.processor.process_raw_isup(raw_data, client_ip)
+            while True:
+                # Читаем данные с таймаутом
+                data = await asyncio.wait_for(reader.read(1024), timeout=30.0)
                 
-                # Отправка ответа контроллеру
-                if success:
-                    response = b"OK"
-                else:
-                    response = b"ERROR"
+                if not data:
+                    self.logger.info(f"🔌 Соединение с {client_ip} закрыто клиентом")
+                    break
+                    
+                self.logger.debug(f"📥 Получены данные от {client_ip}: {len(data)} байт")
                 
-                writer.write(response)
-                await writer.drain()
+                # Парсим данные
+                event = self.processor.parser.parse(data)
                 
+                if event:
+                    await self.processor.process_access_event(event, client_ip)
+                
+                # ОТПРАВЛЯЕМ ОТВЕТ КОНТРОЛЛЕРУ - ВАЖНО!
+                response = self.processor.parser.create_response(
+                    event.header.sequence_number if event else 0
+                )
+                if response:
+                    writer.write(response)
+                    await writer.drain()
+                    self.logger.debug(f"📤 Отправлен ответ контроллеру")
+                    
         except asyncio.TimeoutError:
-            self.logger.warning(f"⏱️ Таймаут соединения от {client_ip}")
+            self.logger.info(f"⏰ Таймаут соединения с {client_ip}")
+        except ConnectionResetError:
+            self.logger.info(f"🔌 Соединение с {client_ip} разорвано")
         except Exception as e:
-            self.logger.error(f"❌ Ошибка обработки {client_ip}: {e}", exc_info=True)
+            self.logger.error(f"❌ Ошибка обработки {client_ip}: {e}")
         finally:
             try:
                 writer.close()
                 await writer.wait_closed()
-            except:
-                pass
+                self.logger.info(f"🔌 Соединение с {client_ip} закрыто")
+            except Exception as e:
+                self.logger.debug(f"Ошибка при закрытии соединения: {e}")
     
     async def start(self):
         """Запуск TCP сервера"""
         self.server = await asyncio.start_server(
             self.handle_client,
             self.config.host,
-            self.config.port,
-            limit=65536  # Буфер 64KB
+            self.config.port
         )
         
         addr = self.server.sockets[0].getsockname()
@@ -483,7 +451,7 @@ class HTTPAPIServer:
         
         return web.json_response({
             'count': len(pending_files),
-            'files': [f.name for f in pending_files[:100]]  # Первые 100
+            'files': [f.name for f in pending_files[:100]]
         })
     
     async def start(self, host: str, port: int):
@@ -514,12 +482,12 @@ async def main():
     # Создание компонентов
     metrics = ServerMetrics()
     
-    # Загрузка конфигурации тенантов
+    # Загрузка полной конфигурации
     with open('config/config.yaml', 'r') as f:
         full_config = yaml.safe_load(f)
     
+    # Создание TenantManager
     tenant_manager = TenantManager(full_config)
-    await tenant_manager.init_sessions()
     
     storage = EventStorage(config.storage_path, logger)
     
@@ -531,7 +499,6 @@ async def main():
     
     # Фоновые задачи
     retry_task = asyncio.create_task(processor.retry_pending_events())
-    health_task = asyncio.create_task(tenant_manager.start_health_monitor())
     
     # HTTP API
     api_task = asyncio.create_task(
@@ -558,12 +525,10 @@ async def main():
     # Остановка
     logger.info("🛑 Остановка сервисов...")
     retry_task.cancel()
-    health_task.cancel()
     api_task.cancel()
     tcp_task.cancel()
     
     await tcp_server.stop()
-    await tenant_manager.close_all()
     
     logger.info("👋 ISUP Bridge остановлен")
 
