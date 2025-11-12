@@ -226,7 +226,24 @@ class EventProcessor:
         self.storage = storage
         self.metrics = metrics
         self.logger = logger
-        self.parser = ISUPv5Parser()
+        self.parser = ISUPv5Parser(strict_mode=False)  # Нестрогий режим для лучшей совместимости
+    
+    async def process_access_event(self, event: ISUPAccessEvent, client_ip: str) -> bool:
+        """Обработка события доступа (упрощенная версия без 1С)"""
+        try:
+            event_dict = event.to_dict()
+            self.logger.info(f"📨 Событие от {client_ip}: Устройство={event.header.device_id} | Карта={event.card_number} | Направление={event.direction.name} | Тип={event.access_type.name}")
+            
+            # ВРЕМЕННО ОТКЛЮЧАЕМ ОТПРАВКУ В 1С
+            # await self.send_to_1c(event)
+            
+            # Просто логируем успешное получение
+            self.logger.info(f"✅ Событие получено и обработано (1С временно отключен)")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка обработки события: {e}")
+            return False
     
     async def process_access_event(self, event: ISUPAccessEvent, client_ip: str) -> bool:
         """Обработка события доступа (упрощенная версия без 1С)"""
@@ -294,6 +311,10 @@ class EventProcessor:
                 self.metrics.events_pending = pending_count
                 
                 # ВРЕМЕННО ОТКЛЮЧАЕМ ПОВТОРНУЮ ОТПРАВКУ
+<<<<<<< Updated upstream
+=======
+                # Просто логируем наличие pending файлов
+>>>>>>> Stashed changes
                 if pending_count > 0:
                     self.logger.debug(f"📁 Найдено {pending_count} неотправленных событий (отправка отключена)")
                 
