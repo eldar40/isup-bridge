@@ -1,0 +1,70 @@
+# Tenants Configuration
+# Конфигурация для поддержки нескольких 1С серверов
+
+tenants:
+  # Главный офис - основной сервер 1С
+  - tenant_id: main_office
+    tenant_name: "Главный офис - Москва"
+    base_url: "https://1c-moscow.company.ru"
+    endpoint: "/hs/access/events"
+    username: "rest_user"
+    password: "CHANGE_ME"
+    enabled: true
+    is_default: true
+    max_retries: 3
+    retry_delay: 5
+    timeout: 30
+    
+    # Привязка устройств к тенанту (опционально)
+    device_serials:
+      - "HIKVISION_SERIAL_001"
+      - "HIKVISION_SERIAL_002"
+    
+    # Привязка по номерам дверей (опционально)
+    door_numbers: []
+
+  # Филиал - отдельный сервер 1С
+  - tenant_id: branch_spb
+    tenant_name: "Филиал - Санкт-Петербург"
+    base_url: "https://1c-spb.company.ru"
+    endpoint: "/hs/access/events"
+    username: "rest_user_spb"
+    password: "CHANGE_ME"
+    enabled: true
+    max_retries: 3
+    retry_delay: 5
+    timeout: 30
+    
+    device_serials:
+      - "HIKVISION_SERIAL_003"
+    door_numbers: []
+
+  # Производственный цех - отдельная база 1С
+  - tenant_id: production
+    tenant_name: "Производственный цех"
+    base_url: "https://1c-prod.company.ru"
+    endpoint: "/hs/access/events"
+    username: "rest_user_prod"
+    password: "CHANGE_ME"
+    enabled: true
+    max_retries: 3
+    retry_delay: 5
+    timeout: 30
+    
+    device_serials: []
+    # Маршрутизация по номерам дверей
+    door_numbers: [10, 11, 12, 13, 14, 15]
+
+  # Тестовый сервер
+  - tenant_id: test
+    tenant_name: "Тестовая среда"
+    base_url: "http://localhost:8000"
+    endpoint: "/api/test/events"
+    username: "test"
+    password: "test"
+    enabled: false  # Отключен по умолчанию
+    max_retries: 1
+    retry_delay: 2
+    timeout: 10
+    device_serials: []
+    door_numbers: []

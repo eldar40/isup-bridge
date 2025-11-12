@@ -1,0 +1,6 @@
+# Example Card Mapping
+# Copy this file to card_mapping.yaml and add your cards
+
+card_mapping:
+  # Format: "CARD_NUMBER": "EMPLOYEE_ID_IN_1C"
+  "EXAMPLE_CARD_123": "EMP001"

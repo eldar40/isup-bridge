@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  isup-bridge:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    container_name: isup-bridge
+    restart: unless-stopped
+    
+    ports:
+      - "8080:8080"   # ISUP TCP порт
+      - "8081:8081"   # HTTP API
+    
+    volumes:
+      - ../config:/app/config:ro
+      - ../logs:/app/logs
+      - ../pending_events:/app/pending_events
+    
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+    
+    networks:
+      - isup-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Опционально: Prometheus для метрик
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: isup-prometheus
+    restart: unless-stopped
+    
+    ports:
+      - "9090:9090"
+    
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    
+    networks:
+      - isup-network
+  
+  # Опционально: Grafana для визуализации
+  grafana:
+    image: grafana/grafana:latest
+    container_name: isup-grafana
+    restart: unless-stopped
+    
+    ports:
+      - "3000:3000"
+    
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+    
+    networks:
+      - isup-network
+    
+    depends_on:
+      - prometheus
+
+networks:
+  isup-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

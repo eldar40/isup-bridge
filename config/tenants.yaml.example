@@ -1,0 +1,18 @@
+# Example Tenants Configuration
+# Copy this file to tenants.yaml and customize
+
+tenants:
+  - tenant_id: main_office
+    tenant_name: "Main Office"
+    base_url: "https://1c.your-company.com"
+    endpoint: "/hs/access/events"
+    username: "rest_user"
+    password: "CHANGE_ME_STRONG_PASSWORD"
+    enabled: true
+    is_default: true
+    max_retries: 3
+    retry_delay: 5
+    timeout: 30
+    device_serials:
+      - "YOUR_HIKVISION_SERIAL"
+    door_numbers: []

@@ -1,0 +1,42 @@
+[Unit]
+Description=ISUP Bridge Service for Hikvision to 1C Integration
+After=network-online.target
+Wants=network-online.target
+Documentation=https://github.com/your-username/isup-bridge-production
+
+[Service]
+Type=simple
+User=isupuser
+Group=isupuser
+WorkingDirectory=/opt/isup-bridge
+Environment="PATH=/opt/isup-bridge/venv/bin"
+ExecStart=/opt/isup-bridge/venv/bin/python /opt/isup-bridge/src/main.py
+
+# Рестарт при падении
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# Логирование
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=isup-bridge
+
+# Безопасность
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/isup-bridge/logs /opt/isup-bridge/pending_events
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Ресурсы
+LimitNOFILE=65536
+MemoryLimit=1G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target
