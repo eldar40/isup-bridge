@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ISUP Bridge - main server file
-Полностью готовый вариант main.py с метриками, TCP сервером и HTTP health API.
+Полностью готовый main.py для ISUP Bridge.
+Файл включает:
+- чтение конфигурации (config/config.yaml при наличии),
+- устойчивое логирование,
+- TCP сервер с устойчивой обработкой пакетов и fallback-ответом,
+- минимальные заглушки для isup_protocol и tenant_manager если их нет,
+- HTTP health/metrics API (если установлен aiohttp).
 """
 
 import asyncio
@@ -12,11 +17,11 @@ import struct
 import json
 from pathlib import Path
 from datetime import datetime
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Dict, Any
 
-# Optional dependencies
+# Попытка импортировать дополнительные зависимости (необязательно)
 try:
     import yaml
 except Exception:
@@ -42,7 +47,7 @@ except Exception:
     TenantManager = None
 
 # -------------------------
-# Config dataclass
+# Конфигурация
 # -------------------------
 @dataclass
 class ServerConfig:
@@ -60,7 +65,7 @@ class ServerConfig:
         default = {
             'server': {
                 'host': '0.0.0.0',
-                'port': 6000,
+                'port': 8080,
                 'log_level': 'INFO',
                 'storage_path': 'storage',
                 'max_pending_days': 30,
@@ -68,14 +73,17 @@ class ServerConfig:
             }
         }
         if yaml and cfg_path.exists():
-            with open(cfg_path, 'r', encoding='utf-8') as f:
-                data = yaml.safe_load(f) or {}
+            try:
+                with open(cfg_path, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f) or {}
+            except Exception:
+                data = default
         else:
             data = default
         server = data.get('server', default['server'])
         return cls(
             host=server.get('host', '0.0.0.0'),
-            port=int(server.get('port', 6000)),
+            port=int(server.get('port', 8080)),
             log_level=server.get('log_level', 'INFO'),
             storage_path=Path(server.get('storage_path', 'storage')),
             max_pending_days=int(server.get('max_pending_days', 30)),
@@ -84,7 +92,7 @@ class ServerConfig:
         )
 
 # -------------------------
-# Logging setup
+# Логирование
 # -------------------------
 def setup_logging(config: ServerConfig) -> logging.Logger:
     log_dir = Path('logs')
@@ -93,7 +101,7 @@ def setup_logging(config: ServerConfig) -> logging.Logger:
     level = getattr(logging, config.log_level.upper(), logging.INFO)
     logger.setLevel(level)
 
-    # Avoid duplicate handlers on reload
+    # Избегаем дублирования обработчиков при перезапуске
     if logger.handlers:
         return logger
 
@@ -118,7 +126,7 @@ def setup_logging(config: ServerConfig) -> logging.Logger:
     return logger
 
 # -------------------------
-# Minimal safe stubs (используются только если реальные модули отсутствуют)
+# Заглушки для isup_protocol и tenant_manager (если отсутствуют)
 # -------------------------
 if ISUPv5Parser is None:
     @dataclass
@@ -138,22 +146,19 @@ if ISUPv5Parser is None:
         - create_response(sequence_number, device_id, status) -> bytes
         """
         def parse(self, data: bytes) -> Optional[_ISUPAccessEvent]:
-            # Простейшая эвристика: если длина > 8, считаем это событием
             try:
+                # Если данных недостаточно — считаем heartbeat/не событие
                 if not data or len(data) < 8:
                     return None
-                # Попробуем извлечь sequence_number из байт 4..8 если есть
                 seq = 0
                 if len(data) >= 8:
                     seq = struct.unpack('>I', data[4:8])[0]
-                # device id — байты 8..16 или hex
                 device_id = data[8:16].hex().upper() if len(data) >= 16 else 'UNKNOWN'
                 return _ISUPAccessEvent(header=_Header(sequence_number=seq, device_id=device_id), payload=data)
             except Exception:
                 return None
 
         def create_response(self, sequence_number: int, device_id: str, status: int = 0) -> bytes:
-            # Формат ответа: b'ISUP' + seq(4) + device_id(8) + status(1)
             try:
                 header = b'ISUP'
                 seqb = struct.pack('>I', int(sequence_number) & 0xFFFFFFFF)
@@ -173,13 +178,12 @@ if TenantManager is None:
             self.config = config or {}
 
         def get_tenant(self, device_id: str) -> Dict[str, Any]:
-            # Заглушка: возвращает пустую конфигурацию
             return {"device_id": device_id, "endpoint": None}
 
     TenantManager = _TenantManager
 
 # -------------------------
-# ServerMetrics
+# Метрики сервера
 # -------------------------
 class ServerMetrics:
     def __init__(self):
@@ -209,7 +213,7 @@ class ServerMetrics:
         }
 
 # -------------------------
-# EventStorage
+# Хранилище событий
 # -------------------------
 class EventStorage:
     def __init__(self, storage_path: Path, logger: logging.Logger):
@@ -218,15 +222,16 @@ class EventStorage:
         self.logger = logger
 
     async def store_event(self, event: Any) -> Path:
-        """Сохраняет событие в файл JSON (асинхронно имитируем)."""
         try:
             ts = datetime.utcnow().strftime('%Y%m%dT%H%M%S%f')
             fname = self.storage_path / f'event_{ts}.json'
             data = {
                 "timestamp": datetime.utcnow().isoformat(),
-                "event": str(event)
+                "event": {
+                    "header": getattr(event, 'header', None).__dict__ if getattr(event, 'header', None) else str(getattr(event, 'payload', event)),
+                    "raw": getattr(event, 'payload', None).hex() if getattr(event, 'payload', None) else None
+                }
             }
-            # Синхронная запись — небольшая задержка, но простая и надёжная
             with open(fname, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             self.logger.debug(f'Событие сохранено в {fname}')
@@ -236,12 +241,11 @@ class EventStorage:
             raise
 
     async def retry_pending(self):
-        """Заглушка: можно реализовать повторную отправку незавершённых событий."""
-        # В реальном приложении — читать папку, фильтровать по age, пытаться отправить.
+        # Заглушка для фоновой задачи повторной отправки
         await asyncio.sleep(0.1)
 
 # -------------------------
-# EventProcessor
+# Обработчик событий
 # -------------------------
 class EventProcessor:
     def __init__(self, tenant_manager: TenantManager, storage: EventStorage, metrics: ServerMetrics, logger: logging.Logger):
@@ -252,9 +256,10 @@ class EventProcessor:
         self.parser = ISUPv5Parser()
 
     async def process_access_event(self, event: Any, client_ip: str):
-        """Обработка события: логирование, сохранение и (опционально) отправка в tenant endpoint."""
         try:
-            self.logger.info(f'Обработка события от {client_ip}: seq={getattr(event.header, "sequence_number", None)} dev={getattr(event.header, "device_id", None)}')
+            seq = getattr(event.header, 'sequence_number', None)
+            dev = getattr(event.header, 'device_id', None)
+            self.logger.info(f'Обработка события от {client_ip}: seq={seq} dev={dev}')
             await self.storage.store_event(event)
             self.metrics.mark_processed()
             # Здесь можно добавить отправку в tenant endpoint через aiohttp
@@ -263,7 +268,6 @@ class EventProcessor:
             self.logger.error(f'Ошибка при обработке события: {e}', exc_info=True)
 
     async def retry_pending_events(self):
-        """Фоновая задача для повторной отправки событий."""
         while True:
             try:
                 await self.storage.retry_pending()
@@ -272,7 +276,7 @@ class EventProcessor:
             await asyncio.sleep(30)
 
 # -------------------------
-# HTTP API Server (health / metrics)
+# HTTP API (health / metrics)
 # -------------------------
 class HTTPAPIServer:
     def __init__(self, metrics: ServerMetrics, tenant_manager: TenantManager, storage: EventStorage, logger: logging.Logger):
@@ -309,7 +313,7 @@ class HTTPAPIServer:
             self.logger.info('HTTP API остановлен')
 
 # -------------------------
-# TCP Server
+# TCP сервер с устойчивой обработкой
 # -------------------------
 class ISUPTCPServer:
     def __init__(self, config: ServerConfig, processor: EventProcessor, metrics: ServerMetrics, logger: logging.Logger):
@@ -331,43 +335,89 @@ class ISUPTCPServer:
                 except asyncio.TimeoutError:
                     self.logger.info(f'Таймаут чтения от {client_ip}')
                     break
+
                 if not data:
                     self.logger.info(f'Клиент {client_ip} закрыл соединение')
                     break
-                self.logger.debug(f'Получено {len(data)} байт от {client_ip}')
 
-                # Попытка распарсить пакет
+                # Логируем сырые байты в hex для диагностики
                 try:
-                    event = self.processor.parser.parse(data)
+                    self.logger.debug(f'RAW from {client_ip}: {data.hex()}')
+                except Exception:
+                    self.logger.debug(f'RAW from {client_ip}: <non-hex data>')
+
+                # Попытка распарсить пакет стандартным парсером
+                event = None
+                parser = getattr(self.processor, 'parser', None)
+                parse_error = None
+                try:
+                    if parser:
+                        event = parser.parse(data)
                 except Exception as e:
-                    self.logger.debug(f'Ошибка парсинга: {e}', exc_info=True)
-                    event = None
+                    parse_error = e
+                    self.logger.debug(f'Ошибка парсинга пакета: {e}', exc_info=True)
 
                 response = None
                 if event:
+                    # Нормальная обработка события
                     await self.processor.process_access_event(event, client_ip)
                     try:
                         seq = getattr(event.header, 'sequence_number', 0)
                         dev = getattr(event.header, 'device_id', 'UNKNOWN')
-                        response = self.processor.parser.create_response(sequence_number=seq, device_id=dev, status=0)
+                        if parser and hasattr(parser, 'create_response'):
+                            response = parser.create_response(sequence_number=seq, device_id=dev, status=0)
                     except Exception as e:
-                        self.logger.debug(f'Ошибка формирования ответа: {e}', exc_info=True)
+                        self.logger.debug(f'Ошибка формирования ответа для события: {e}', exc_info=True)
                         response = None
                 else:
-                    # Heartbeat / неизвестный пакет — попытка сформировать ответ по минимальным данным
+                    # Fallback обработка при ошибке парсера или при heartbeat
                     try:
                         seq = 0
                         dev = 'UNKNOWN'
                         if len(data) >= 8:
                             seq = struct.unpack('>I', data[4:8])[0]
                         if len(data) >= 16:
-                            dev = data[8:16].decode('utf-8', errors='ignore').strip('\x00') or data[8:16].hex().upper()
-                        response = self.processor.parser.create_response(sequence_number=seq, device_id=dev, status=0)
+                            try:
+                                dev = data[8:16].decode('utf-8', errors='ignore').strip('\x00') or data[8:16].hex().upper()
+                            except Exception:
+                                dev = data[8:16].hex().upper()
+
+                        # Если парсер есть и умеет формировать ответ — используем его
+                        if parser and hasattr(parser, 'create_response'):
+                            try:
+                                response = parser.create_response(sequence_number=seq, device_id=dev, status=0)
+                                self.logger.info(f'Fallback: сформирован ответ через parser.create_response seq={seq} dev={dev}')
+                            except Exception as e:
+                                self.logger.debug(f'Parser.create_response упал: {e}', exc_info=True)
+                                response = None
+
+                        # Иначе формируем простой ответ вручную
+                        if response is None:
+                            try:
+                                header = b'ISUP'
+                                seqb = struct.pack('>I', int(seq) & 0xFFFFFFFF)
+                                devb = dev.encode('utf-8')[:8].ljust(8, b'\x00')
+                                st = struct.pack('B', 0)
+                                response = header + seqb + devb + st
+                                self.logger.info(f'Fallback: сформирован ручной ответ seq={seq} dev={dev}')
+                            except Exception as e:
+                                self.logger.debug(f'Не удалось сформировать ручной ответ: {e}', exc_info=True)
+                                response = None
+
+                        # Логируем причину парсинга, если была ошибка
+                        if parse_error:
+                            msg = str(parse_error)
+                            if any(k in msg.lower() for k in ('unknown', 'неизвест', 'unsupported', 'неподдерж')):
+                                self.logger.warning(f'Парсер отверг пакет от {client_ip}: {msg}. Отправляем fallback-ответ и оставляем соединение открытым.')
+                            else:
+                                self.logger.debug(f'Парсер вернул ошибку: {msg}')
+                        # Отмечаем heartbeat
                         self.metrics.mark_heartbeat()
                     except Exception as e:
-                        self.logger.debug(f'Не удалось сформировать heartbeat-ответ: {e}', exc_info=True)
+                        self.logger.debug(f'Ошибка fallback-обработки: {e}', exc_info=True)
                         response = None
 
+                # Отправляем ответ если он есть
                 if response and isinstance(response, (bytes, bytearray)):
                     try:
                         writer.write(response)
@@ -405,7 +455,7 @@ class ISUPTCPServer:
             self.logger.info('TCP сервер остановлен')
 
 # -------------------------
-# Main
+# main
 # -------------------------
 async def main():
     config = ServerConfig.from_yaml()
@@ -437,7 +487,7 @@ async def main():
         try:
             loop.add_signal_handler(s, _signal_handler)
         except NotImplementedError:
-            # Windows
+            # Windows fallback
             pass
 
     await shutdown_event.wait()
@@ -454,7 +504,6 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print('Прервано пользователем')
     except Exception as e:
-        # Если что-то упало до логгера — печатаем в stderr
         import sys
         print(f'Fatal error: {e}', file=sys.stderr)
         raise
