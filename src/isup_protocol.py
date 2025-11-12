@@ -25,6 +25,13 @@ class ISUPMessageType(IntEnum):
     CARD_EVENT = 0x0040
     FACE_EVENT = 0x0080
     FINGERPRINT_EVENT = 0x0100
+    UNKNOWN = 0xFFFF  # Для неизвестных типов
+
+    @classmethod
+    def _missing_(cls, value):
+        """Обработка неизвестных значений enum"""
+        logger.warning(f"Неизвестный тип сообщения ISUP: {value} (0x{value:04x})")
+        return cls.UNKNOWN
 
 
 class ISUPAccessType(IntEnum):
@@ -37,6 +44,11 @@ class ISUPAccessType(IntEnum):
     IRIS = 0x20
     PALM = 0x40
     MULTI_FACTOR = 0x80  # Многофакторная аутентификация
+    UNKNOWN = 0xFF
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.UNKNOWN
 
 
 class ISUPDirection(IntEnum):
@@ -56,6 +68,11 @@ class ISUPAccessResult(IntEnum):
     DENIED_BLACKLIST = 0x05
     DENIED_ANTI_PASSBACK = 0x06  # Нарушение антипассбэка
     DENIED_INTERLOCK = 0x07      # Нарушение межблокировки
+    UNKNOWN = 0xFF
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.UNKNOWN
 
 
 class ISUPPersonType(IntEnum):
@@ -64,6 +81,11 @@ class ISUPPersonType(IntEnum):
     VISITOR = 0x02     # Посетитель
     BLACKLIST = 0x03   # Черный список
     VIP = 0x04         # VIP персона
+    UNKNOWN = 0xFF
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.UNKNOWN
 
 
 @dataclass
@@ -93,7 +115,15 @@ class ISUPHeader:
         # [28]    - Flags (1 byte: бит 0 - шифрование, бит 1 - сжатие)
         
         protocol_version = struct.unpack('>H', data[0:2])[0]
-        message_type = ISUPMessageType(struct.unpack('>H', data[2:4])[0])
+        
+        # Безопасное получение типа сообщения
+        message_type_raw = struct.unpack('>H', data[2:4])[0]
+        try:
+            message_type = ISUPMessageType(message_type_raw)
+        except ValueError:
+            logger.warning(f"Неизвестный тип сообщения: {message_type_raw}, используем UNKNOWN")
+            message_type = ISUPMessageType.UNKNOWN
+        
         sequence_number = struct.unpack('>I', data[4:8])[0]
         
         # Новый формат Device ID (16 байт) согласно ISAPI 2.3.20
@@ -122,9 +152,6 @@ class ISUPHeader:
     def _parse_device_id(device_id_bytes: bytes) -> str:
         """Парсинг Device ID согласно ISAPI 2.3.20"""
         try:
-            # Формат: industry#device_type#version#device_id
-            device_id_hex = device_id_bytes.hex()
-            
             # Для обратной совместимости с 11-значным ID
             if len(device_id_bytes) == 16:
                 # Новый 16-байтный формат
@@ -230,7 +257,7 @@ class ISUPv5Parser:
             elif header.message_type == ISUPMessageType.FACE_EVENT:
                 return self._parse_face_event(raw_data, header)
             else:
-                self.logger.info(f"Тип сообщения {header.message_type} от {header.device_id}")
+                self.logger.info(f"Тип сообщения {header.message_type.name} от {header.device_id}")
                 return None
                 
         except Exception as e:
@@ -240,69 +267,69 @@ class ISUPv5Parser:
     def _parse_access_event(self, raw_data: bytes, header: ISUPHeader) -> ISUPAccessEvent:
         """
         Парсинг события доступа согласно ISAPI спецификации
-        
-        Структура данных события (после заголовка 29 байт):
-        [29-30] - Door ID (2 bytes)
-        [31-32] - Reader ID (2 bytes)
-        [33]    - Access type (1 byte)
-        [34]    - Direction (1 byte)
-        [35]    - Access result (1 byte)
-        [36]    - Verification mode (1 byte)
-        [37-38] - Alarm status (2 bytes)
-        [39]    - Person type (1 byte)
-        [40-41] - Group ID (2 bytes)
-        [42-57] - Card number (16 bytes, ASCII)
-        [58-73] - Employee number (16 bytes, ASCII)
-        [74-77] - Temperature (4 bytes, float, опционально)
-        [78]    - Mask status (1 byte, опционально)
         """
         
         if len(raw_data) < 58:
             return self._parse_access_event_basic(raw_data, header)
         
-        # Парсинг основных полей
-        door_id = struct.unpack('>H', raw_data[29:31])[0]
-        reader_id = struct.unpack('>H', raw_data[31:33])[0]
-        access_type = ISUPAccessType(raw_data[33])
-        direction = ISUPDirection(raw_data[34])
-        access_result = ISUPAccessResult(raw_data[35])
-        verification_mode = raw_data[36]
-        alarm_status = struct.unpack('>H', raw_data[37:39])[0]
-        person_type = ISUPPersonType(raw_data[39])
-        group_id = struct.unpack('>H', raw_data[40:42])[0]
-        
-        # Извлечение строковых данных
-        card_number = self._extract_string(raw_data[42:58])
-        employee_number = self._extract_string(raw_data[58:74])
-        
-        # Обработка опциональных полей
-        temperature = None
-        mask_status = None
-        
-        if len(raw_data) >= 78:
-            try:
-                temperature = struct.unpack('>f', raw_data[74:78])[0]
-                mask_status = bool(raw_data[78])
-            except:
-                pass
-        
-        return ISUPAccessEvent(
-            header=header,
-            card_number=card_number,
-            employee_number=employee_number,
-            access_type=access_type,
-            direction=direction,
-            access_result=access_result,
-            door_id=door_id,
-            reader_id=reader_id,
-            alarm_status=alarm_status,
-            verification_mode=verification_mode,
-            person_type=person_type,
-            group_id=group_id,
-            temperature=temperature,
-            mask_status=mask_status,
-            raw_data=raw_data
-        )
+        try:
+            # Парсинг основных полей
+            door_id = struct.unpack('>H', raw_data[29:31])[0]
+            reader_id = struct.unpack('>H', raw_data[31:33])[0]
+            
+            # Безопасное получение enum значений
+            access_type_raw = raw_data[33]
+            access_type = ISUPAccessType(access_type_raw) if access_type_raw in ISUPAccessType._value2member_map_ else ISUPAccessType.UNKNOWN
+            
+            direction_raw = raw_data[34]
+            direction = ISUPDirection(direction_raw) if direction_raw in ISUPDirection._value2member_map_ else ISUPDirection.UNKNOWN
+            
+            access_result_raw = raw_data[35]
+            access_result = ISUPAccessResult(access_result_raw) if access_result_raw in ISUPAccessResult._value2member_map_ else ISUPAccessResult.UNKNOWN
+            
+            verification_mode = raw_data[36]
+            alarm_status = struct.unpack('>H', raw_data[37:39])[0]
+            
+            person_type_raw = raw_data[39]
+            person_type = ISUPPersonType(person_type_raw) if person_type_raw in ISUPPersonType._value2member_map_ else ISUPPersonType.UNKNOWN
+            
+            group_id = struct.unpack('>H', raw_data[40:42])[0]
+            
+            # Извлечение строковых данных
+            card_number = self._extract_string(raw_data[42:58])
+            employee_number = self._extract_string(raw_data[58:74])
+            
+            # Обработка опциональных полей
+            temperature = None
+            mask_status = None
+            
+            if len(raw_data) >= 78:
+                try:
+                    temperature = struct.unpack('>f', raw_data[74:78])[0]
+                    mask_status = bool(raw_data[78])
+                except:
+                    pass
+            
+            return ISUPAccessEvent(
+                header=header,
+                card_number=card_number,
+                employee_number=employee_number,
+                access_type=access_type,
+                direction=direction,
+                access_result=access_result,
+                door_id=door_id,
+                reader_id=reader_id,
+                alarm_status=alarm_status,
+                verification_mode=verification_mode,
+                person_type=person_type,
+                group_id=group_id,
+                temperature=temperature,
+                mask_status=mask_status,
+                raw_data=raw_data
+            )
+        except Exception as e:
+            self.logger.error(f"Ошибка парсинга события доступа: {e}")
+            return self._parse_access_event_basic(raw_data, header)
     
     def _parse_access_event_basic(self, raw_data: bytes, header: ISUPHeader) -> ISUPAccessEvent:
         """
@@ -318,9 +345,14 @@ class ISUPv5Parser:
         access_result = ISUPAccessResult.SUCCESS
         
         if len(raw_data) >= 34:
-            door_id = struct.unpack('>H', raw_data[29:31])[0] if len(raw_data) >= 31 else 1
-            reader_id = struct.unpack('>H', raw_data[31:33])[0] if len(raw_data) >= 33 else 1
-            access_type = ISUPAccessType(raw_data[33]) if len(raw_data) >= 34 else ISUPAccessType.CARD
+            try:
+                door_id = struct.unpack('>H', raw_data[29:31])[0] if len(raw_data) >= 31 else 1
+                reader_id = struct.unpack('>H', raw_data[31:33])[0] if len(raw_data) >= 33 else 1
+                
+                access_type_raw = raw_data[33] if len(raw_data) >= 34 else 1
+                access_type = ISUPAccessType(access_type_raw) if access_type_raw in ISUPAccessType._value2member_map_ else ISUPAccessType.CARD
+            except:
+                pass
         
         # Поиск номеров карт и сотрудников
         card_number = self._find_credential_data(raw_data, min_length=4)
@@ -346,13 +378,11 @@ class ISUPv5Parser:
     
     def _parse_heartbeat(self, raw_data: bytes, header: ISUPHeader) -> None:
         """Обработка heartbeat сообщений"""
-        # Логируем heartbeat для мониторинга
         self.logger.debug(f"Heartbeat от устройства {header.device_id}")
         return None
     
     def _parse_card_event(self, raw_data: bytes, header: ISUPHeader) -> Optional[ISUPAccessEvent]:
         """Парсинг событий с картами"""
-        # Аналогично access event, но с акцентом на карты
         return self._parse_access_event(raw_data, header)
     
     def _parse_face_event(self, raw_data: bytes, header: ISUPHeader) -> Optional[ISUPAccessEvent]:
@@ -401,7 +431,6 @@ class ISUPv5Parser:
     
     def _find_employee_data(self, data: bytes) -> Optional[str]:
         """Специализированный поиск номеров сотрудников"""
-        # Номера сотрудников обычно короче и имеют специфический формат
         return self._find_credential_data(data, min_length=2)
     
     def create_response(self, 
@@ -414,48 +443,54 @@ class ISUPv5Parser:
         
         Args:
             sequence_number: Номер пакета для подтверждения
-            device_id: ID устройства
+            device_id: ID устройства (обязательный параметр)
             status: Статус обработки (0 = успех)
             additional_data: Дополнительные данные ответа
             
         Returns:
             Байты ответного пакета
         """
-        # Базовая структура ответа ISUP v5
-        response = struct.pack(
-            '>HH',
-            5,  # Protocol version
-            0xFFFF  # Response message type
-        )
-        
-        response += struct.pack('>I', sequence_number)
-        
-        # Device ID (16 байт)
-        device_id_bytes = device_id.encode('ascii')[:16].ljust(16, b'\x00')
-        response += device_id_bytes
-        
-        # Timestamp
-        response += struct.pack('>I', int(datetime.now().timestamp()))
-        
-        # Flags
-        flags = 0x00  # Без шифрования и сжатия
-        response += struct.pack('B', flags)
-        
-        # Status
-        response += struct.pack('B', status)
-        
-        # Дополнительные данные
-        if additional_data:
-            try:
-                additional_json = json.dumps(additional_data).encode('ascii')
-                response += struct.pack('>H', len(additional_json))
-                response += additional_json
-            except:
+        try:
+            # Базовая структура ответа ISUP v5
+            response = struct.pack(
+                '>HH',
+                5,  # Protocol version
+                0xFFFF  # Response message type
+            )
+            
+            response += struct.pack('>I', sequence_number)
+            
+            # Device ID (16 байт) - обязательный параметр
+            device_id_bytes = device_id.encode('ascii')[:16].ljust(16, b'\x00')
+            response += device_id_bytes
+            
+            # Timestamp
+            response += struct.pack('>I', int(datetime.now().timestamp()))
+            
+            # Flags
+            flags = 0x00  # Без шифрования и сжатия
+            response += struct.pack('B', flags)
+            
+            # Status
+            response += struct.pack('B', status)
+            
+            # Дополнительные данные
+            if additional_data:
+                try:
+                    additional_json = json.dumps(additional_data).encode('ascii')
+                    response += struct.pack('>H', len(additional_json))
+                    response += additional_json
+                except:
+                    response += struct.pack('>H', 0)
+            else:
                 response += struct.pack('>H', 0)
-        else:
-            response += struct.pack('>H', 0)
-        
-        return response
+            
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка создания ответа: {e}")
+            # Возвращаем минимальный ответ при ошибке
+            return struct.pack('>HHI', 5, 0xFFFF, sequence_number)
 
 
 # Дополнительные утилиты для работы с ISUP

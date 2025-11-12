@@ -352,11 +352,34 @@ class ISUPTCPServer:
                 
                 if event:
                     await self.processor.process_access_event(event, client_ip)
+                    # ИСПРАВЛЕНИЕ: передаем device_id в create_response
+                    response = self.processor.parser.create_response(
+                        sequence_number=event.header.sequence_number,
+                        device_id=event.header.device_id,
+                        status=0
+                    )
+                else:
+                    # ИСПРАВЛЕНИЕ: для heartbeat или неизвестных пакетов создаем базовый ответ
+                    # Пытаемся извлечь sequence_number и device_id из сырых данных
+                    try:
+                        if len(data) >= 8:
+                            sequence_number = struct.unpack('>I', data[4:8])[0]
+                            # Берем первые 8 байт device_id для ответа
+                            device_id_bytes = data[8:16] if len(data) >= 16 else b'UNKNOWN\x00'
+                            device_id = device_id_bytes.hex().upper()
+                        else:
+                            sequence_number = 0
+                            device_id = "UNKNOWN"
+                        
+                        response = self.processor.parser.create_response(
+                            sequence_number=sequence_number,
+                            device_id=device_id,
+                            status=0
+                        )
+                    except Exception as e:
+                        self.logger.debug(f"Не удалось создать ответ для heartbeat: {e}")
+                        response = None
                 
-                # ОТПРАВЛЯЕМ ОТВЕТ КОНТРОЛЛЕРУ - ВАЖНО!
-                response = self.processor.parser.create_response(
-                    event.header.sequence_number if event else 0
-                )
                 if response:
                     writer.write(response)
                     await writer.drain()
