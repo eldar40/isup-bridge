@@ -1,4 +1,3 @@
-cat > /opt/isup_bridge/src/isapi_server.py << 'EOF'
 """
 ISAPI Webhook Server for Hikvision Terminals
 """
@@ -88,4 +87,3 @@ class ISAPIDeviceManager:
         """Automatically configure all terminals"""
         self.logger.info("🔄 Автонастройка терминалов...")
         return []
-EOF
