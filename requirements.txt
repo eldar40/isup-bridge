@@ -1,6 +1,6 @@
 # Python dependencies
 aiohttp>=3.9.0
-PyYAML>=8.0
+PyYAML>=6.0
 asyncio>=3.4.3
 
 # Optional: для расширенной функциональности
