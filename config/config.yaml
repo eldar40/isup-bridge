@@ -1,80 +1,168 @@
-# ВРЕМЕННЫЙ КОНФИГ ДЛЯ ТЕСТИРОВАНИЯ
+# ISUP Bridge Configuration - Production Ready
+# Полная интеграция ISUP + ISAPI терминалов
+
+# ==================== ОСНОВНЫЕ НАСТРОЙКИ СЕРВЕРА ====================
 server:
   host: "0.0.0.0"
-  port: 8080
-  log_level: "DEBUG"  # ВКЛЮЧИТЬ DEBUG!
+  port: 8080                    # Порт для ISUP протокола
+  log_level: "INFO"
   storage_path: "/opt/isup_bridge/storage"
   max_pending_days: 30
   health_check_port: 8081
 
+# ==================== ISAPI WEBHOOK НАСТРОЙКИ ====================
+isapi:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8082                    # Порт для ISAPI webhook
+  webhook_secret: ""            # Секрет для подписи webhook (опционально)
+  
+  # Учетные данные для автоматической настройки терминалов
+  username: "admin"
+  password: "Ee40060840"
+  
+  # Базовый URL для webhook (должен быть доступен терминалам)
+  webhook_base_url: "http://your-server-ip:8082"
+
+# ==================== ОБЪЕКТЫ И УСТРОЙСТВА ====================
 objects:
-  - object_id: "test_object"
-    name: "Тестовый объект"
-    description: "Для диагностики"
-    address: "Тестовый адрес"
+  
+  # ===== ОБЪЕКТ 1: Главный офис Москва =====
+  - object_id: "main_office_moscow"
+    name: "Главный офис Москва"
+    description: "Центральный офис на Тверской"
+    address: "Москва, ул. Тверская, д. 1"
     
+    # 1С сервер для этого объекта
     c1_server:
-      base_url: "https://1c-test.yourcompany.ru"
+      base_url: "https://1c-main.yourcompany.ru"
       endpoint: "/hs/access/events"
-      username: "test"
-      password: "test"
+      username: "isup_bridge_user"
+      password: "CHANGE_ME_main_password"
       timeout: 30
       max_retries: 3
       retry_delay: 5
     
-    # РАЗРЕШАЕМ ВСЕ УСТРОЙСТВА ДЛЯ ТЕСТА
+    # Контроллеры ISUP
     devices:
-      - device_id: "343831383733390D"  # Старый device_id из логов
+      - device_id: "343831383733390D"
         serial_number: "F-KD-3323PMFC-001"
-        description: "Тестовый контроллер"
+        description: "Турникет вход главный"
         type: "turnstile"
-        direction: "both"
-        location: "Тестовое расположение"
+        direction: "in"
+        location: "Главный вход, 1 этаж"
         floor: "1"
+    
+    # Терминалы ISAPI
+    terminals:
+      - terminal_id: "main_entrance_terminal"
+        ip_address: "192.168.1.100"
+        mac_address: "00-11-22-33-44-55"
+        model: "DS-K1T671MF"
+        description: "Терминал вход главный"
+        type: "face_recognition"
+        direction: "in"
+        location: "Главный вход, 1 этаж"
       
-      - device_id: "GA4818739"  # Номер карты как device_id
-        serial_number: "F-KD-3323PMFC-002"
-        description: "Тестовый контроллер 2"
-        type: "turnstile"
-        direction: "both"
-        location: "Тестовое расположение 2"
-        floor: "1"
+      - terminal_id: "main_exit_terminal"
+        ip_address: "192.168.1.101"
+        mac_address: "00-11-22-33-44-56"
+        model: "DS-K1T671MF"
+        description: "Терминал выход главный"
+        type: "card_reader"
+        direction: "out"
+        location: "Главный выход, 1 этаж"
       
-      - device_id: "3"  # Просто цифра 3
-        serial_number: "F-KD-3323PMFC-003"
-        description: "Тестовый контроллер 3"
-        type: "turnstile"
+      - terminal_id: "parking_terminal"
+        ip_address: "192.168.1.102"
+        mac_address: "00-11-22-33-44-57"
+        model: "Face Recognition Pro"
+        description: "Терминал парковка"
+        type: "mixed"
         direction: "both"
-        location: "Тестовое расположение 3"
-        floor: "1"
+        location: "Парковка, -1 этаж"
 
-# DEFAULT КОНФИГ ДЛЯ ЛЮБЫХ ДРУГИХ УСТРОЙСТВ
+  # ===== ОБЪЕКТ 2: Филиал Санкт-Петербург =====
+  - object_id: "spb_office"
+    name: "Филиал Санкт-Петербург"
+    description: "Северный филиал компании"
+    address: "Санкт-Петербург, Невский пр., д. 100"
+    
+    c1_server:
+      base_url: "https://1c-spb.yourcompany.ru"
+      endpoint: "/hs/access/events"
+      username: "isup_bridge_user"
+      password: "CHANGE_ME_spb_password"
+      timeout: 30
+      max_retries: 3
+      retry_delay: 5
+    
+    terminals:
+      - terminal_id: "spb_entrance"
+        ip_address: "192.168.2.100"
+        mac_address: "00-11-22-33-44-58"
+        model: "DS-K1T671MF"
+        description: "Терминал вход СПб"
+        type: "face_recognition"
+        direction: "in"
+        location: "Главный вход, СПб"
+      
+      - terminal_id: "spb_exit"
+        ip_address: "192.168.2.101"
+        mac_address: "00-11-22-33-44-59"
+        model: "DS-K1T671MF"
+        description: "Терминал выход СПб"
+        type: "card_reader"
+        direction: "out"
+        location: "Главный выход, СПб"
+
+# ==================== DEFAULT КОНФИГУРАЦИЯ ====================
 default_object:
   object_id: "default"
   name: "Неизвестные устройства"
-  description: "Автоматическое определение"
+  description: "Автоматическое определение для новых устройств"
   
   c1_server:
-    base_url: "https://1c-default.yourcompany.ru"
+    base_url: "https://sova07.ru:8880"
     endpoint: "/hs/access/events"
-    username: "default"
-    password: "default"
+    username: "isup_bridge_user"
+    password: "CHANGE_ME_default_password"
     timeout: 30
     max_retries: 3
     retry_delay: 5
 
+# ==================== НАСТРОЙКИ БЕЗОПАСНОСТИ ====================
 security:
+  # Белый список IP контроллеров
   allowed_ips:
-    - "37.18.105.89"
-    - "0.0.0.0/0"
+    - "37.18.105.89"    # Текущий контроллер
+    - "192.168.1.0/24"  # Локальная сеть Москва
+    - "192.168.2.0/24"  # Локальная сеть СПб
+    - "10.0.0.0/8"      # Корпоративная сеть
   
-  verify_ssl: false
+  # Настройки SSL
+  verify_ssl: false      # Временно отключено для тестирования
+  
+  # Логирование
+  log_sensitive_data: false
 
+# ==================== МОНИТОРИНГ ====================
 monitoring:
   health_check_interval: 60
-  enable_alerts: false
+  enable_alerts: true
+  alert_unknown_devices: true
 
+# ==================== ДОПОЛНИТЕЛЬНЫЕ НАСТРОЙКИ ====================
 features:
+  # Автоматическое создание объектов для новых устройств
   auto_create_objects: false
+  
+  # Детальное логирование событий
   detailed_logging: true
-  prometheus_enabled: false
+  
+  # Автоматическая настройка терминалов
+  auto_configure_terminals: false
+  
+  # Экспорт в Prometheus
+  prometheus_enabled: true
+  prometheus_port: 9090
