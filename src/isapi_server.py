@@ -1,6 +1,6 @@
+cat > /opt/isup_bridge/src/isapi_server.py << 'EOF'
 """
 ISAPI Webhook Server for Hikvision Terminals
-HTTP сервер для приема событий от терминалов Hikvision
 """
 
 from aiohttp import web
@@ -22,7 +22,6 @@ class ISAPIWebhookServer:
     def _setup_routes(self):
         """Setup webhook routes"""
         self.app.router.add_post('/isapi/webhook', self.handle_webhook)
-        self.app.router.add_post('/ISAPI/Event/notification/alertStream', self.handle_webhook)  # Альтернативный endpoint
         self.app.router.add_get('/isapi/health', self.health_check)
         self.app.router.add_get('/isapi/terminals', self.list_terminals)
     
@@ -76,8 +75,6 @@ class ISAPIWebhookServer:
         
         self.logger.info(f"🌐 ISAPI Webhook сервер запущен на http://{host}:{port}")
         self.logger.info(f"📮 Webhook endpoint: http://{host}:{port}/isapi/webhook")
-        self.logger.info(f"📋 Список терминалов: http://{host}:{port}/isapi/terminals")
-        self.logger.info(f"❤️  Health check: http://{host}:{port}/isapi/health")
 
 
 class ISAPIDeviceManager:
@@ -86,67 +83,9 @@ class ISAPIDeviceManager:
     def __init__(self, config: Dict[str, Any], logger: logging.Logger):
         self.config = config
         self.logger = logger
-        self.terminal_manager = ISAPITerminalManager(config)
     
     async def auto_configure_terminals(self, webhook_base_url: str):
         """Automatically configure all terminals"""
-        terminals = self.terminal_manager.get_all_terminals()
-        results = []
-        
-        self.logger.info(f"🔄 Автонастройка {len(terminals)} терминалов...")
-        
-        for terminal in terminals:
-            result = await self._configure_terminal(terminal, webhook_base_url)
-            results.append(result)
-        
-        success_count = sum(1 for r in results if r['success'])
-        self.logger.info(f"✅ Автонастройка завершена: {success_count}/{len(terminals)} успешно")
-        
-        return results
-    
-    async def _configure_terminal(self, terminal: Any, webhook_base_url: str) -> Dict[str, Any]:
-        """Configure individual terminal"""
-        try:
-            # Создаем клиент для терминала
-            from isapi_client import ISAPIClient
-            
-            # Используем учетные данные из конфига или default
-            isapi_config = self.config.get('isapi', {})
-            username = isapi_config.get('username', 'admin')
-            password = isapi_config.get('password', 'admin123')
-            
-            client = ISAPIClient(
-                base_url=f"http://{terminal.ip_address}",
-                username=username,
-                password=password
-            )
-            
-            # Проверяем активацию
-            is_activated = await client.check_activation_status()
-            if not is_activated:
-                return {
-                    'terminal_id': terminal.terminal_id,
-                    'ip_address': terminal.ip_address,
-                    'success': False,
-                    'error': 'Device not activated'
-                }
-            
-            # Настраиваем webhook
-            webhook_url = f"{webhook_base_url}/isapi/webhook"
-            webhook_configured = await client.configure_webhook(webhook_url)
-            
-            return {
-                'terminal_id': terminal.terminal_id,
-                'ip_address': terminal.ip_address,
-                'success': webhook_configured,
-                'webhook_url': webhook_url
-            }
-            
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка настройки терминала {terminal.ip_address}: {e}")
-            return {
-                'terminal_id': terminal.terminal_id,
-                'ip_address': terminal.ip_address,
-                'success': False,
-                'error': str(e)
-            }
+        self.logger.info("🔄 Автонастройка терминалов...")
+        return []
+EOF
