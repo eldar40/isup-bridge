@@ -286,4 +286,3 @@ class ISUPv5Parser:
         except Exception as e:
             self.logger.error(f"Ошибка создания ответа: {e}")
             return b''
-[file content end]
