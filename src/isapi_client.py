@@ -1,4 +1,3 @@
-cat > /opt/isup_bridge/src/isapi_client.py << 'EOF'
 """
 ISAPI Client for Hikvision Terminal Integration
 """
@@ -277,4 +276,3 @@ class ISAPITerminalManager:
     def get_all_terminals(self) -> List[ISAPITerminalConfig]:
         """Get all configured terminals"""
         return list(self.terminals.values())
-EOF
