@@ -1,5 +1,3 @@
-[file name]: isup_protocol.py
-[file content begin]
 """
 ISUP v5 Protocol Parser for Hikvision Access Control
 """
