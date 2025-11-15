@@ -536,7 +536,7 @@ class ISUPUtils:
 # Пример использования
 if __name__ == "__main__":
     # Настройка логирования
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
     
     # Создание парсера
     parser = ISUPv5Parser()
