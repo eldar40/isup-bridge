@@ -1,9 +1,0 @@
-{
-  "EmployeeID": "101",
-  "EventTime": "2025-11-11T23:11:36+0000",
-  "Door": "1",
-  "EventType": "CardPass",
-  "ControllerIP": "37.18.105.89",
-  "RawData": "104c010100094741343831383733390d462d4b442d33333233504d464329250330303100d95bbf5c2c2fc7ad8bff66a9aec797baef74f6a6b94ac48ec73b6335f763eb2409474134383138373339",
-  "DataLength": 78
-}
