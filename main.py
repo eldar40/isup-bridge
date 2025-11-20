@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-main.py — Точка входа для ISUP <-> ISAPI Bridge
-Полная сборка (вариант B): production-ready, multi-tenant, webhook + ISUP TCP
+main.py — точка входа для ISUP <-> ISAPI Bridge
+Вариант B: production-ready, multi-tenant, webhook + ISUP TCP + Hikvision callback
 """
 
 import asyncio
@@ -25,14 +25,13 @@ from isapi.isapi_server import (
     ISAPIDeviceManager,
     ISAPITerminalManager,
 )
-from hikvision import (
-    HikvisionAlertStream,
-    HikvisionEventDispatcher,
-    create_hikvision_listener,
-)
+
+# NEW — callback only
+from hikvision import HikvisionEventDispatcher, create_hikvision_callback_app
+
 from utils.logging_setup import setup_logging
 
-# ================ Константы и базовые пути ==================
+# ================ Пути ==================
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
 HIKVISION_CONFIG_PATH = PROJECT_ROOT / "config" / "hikvision.yaml"
@@ -50,7 +49,6 @@ class ServerConfig:
         self.max_pending_days = server.get("max_pending_days", 30)
         self.isapi = cfg.get("isapi", {})
         self.features = cfg.get("features", {})
-        self.security = cfg.get("security", {})
 
     @classmethod
     def load_from_file(cls, path: Path):
@@ -59,33 +57,27 @@ class ServerConfig:
         return cls(cfg), cfg
 
 
-# ================ Main async entry =========================
+# ================ Main =========================
 async def main():
     # Load configuration
-    config_path = CONFIG_PATH
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config not found: {config_path}")
-
-    server_cfg, full_cfg = ServerConfig.load_from_file(config_path)
+    server_cfg, full_cfg = ServerConfig.load_from_file(CONFIG_PATH)
     logger = setup_logging(server_cfg.log_level)
     logger.info("🚀 Запуск ISUP / ISAPI Bridge (вариант B)")
 
-    # Optional Hikvision configuration
+    # Load Hikvision config
     hikvision_cfg = {}
     if HIKVISION_CONFIG_PATH.exists():
         with open(HIKVISION_CONFIG_PATH, "r", encoding="utf-8") as f:
             hikvision_cfg = yaml.safe_load(f) or {}
+    hikvision_settings = hikvision_cfg.get("hikvision", {})
 
-    # Metrics & Storage
+    # Core components
     metrics = ServerMetrics()
     storage = EventStorage(server_cfg.storage_path, server_cfg.max_pending_days, logger)
-
-    # Tenant & Terminal managers
     tenant_manager = TenantManager(full_cfg)
     terminal_manager = ISAPITerminalManager(full_cfg)
-
-    # Parser & Processor
     isup_parser = ISUPv5Parser(strict_mode=False)
+
     processor = EventProcessor(
         tenant_manager=tenant_manager,
         terminal_manager=terminal_manager,
@@ -95,7 +87,7 @@ async def main():
         isup_parser=isup_parser,
     )
 
-    # TCP (ISUP) Server
+    # ISUP TCP server
     tcp_server = ISUPTCPServer(
         host=server_cfg.host,
         port=server_cfg.port,
@@ -105,70 +97,47 @@ async def main():
         logger=logger,
     )
 
-    # ISAPI Webhook components
+    # ISAPI Webhook
     isapi_cfg = full_cfg.get("isapi", {})
     webhook_secret = isapi_cfg.get("webhook_secret")
-    webhook_handler = ISAPIWebhookHandler(processor, secret_token=webhook_secret, logger=logger)
-    isapi_server = ISAPIWebhookServer(webhook_handler, full_cfg, logger)
+    isapi_handler = ISAPIWebhookHandler(processor, secret_token=webhook_secret, logger=logger)
+    isapi_server = ISAPIWebhookServer(isapi_handler, full_cfg, logger)
     device_manager = ISAPIDeviceManager(full_cfg, logger)
 
-    # Hikvision dispatcher and runtime containers
-    hikvision_dispatcher = HikvisionEventDispatcher(logger)
-    hikvision_streams = []
-    hikvision_tasks = []
+    # ================ HIKVISION CALLBACK MODE ====================
     hikvision_runner = None
+    callback_cfg = hikvision_settings.get("callback", {})
+    allowed_devices = hikvision_settings.get("allowed_device_ids", [])
 
-    devices_cfg = hikvision_cfg.get("devices", [])
-    if devices_cfg:
-        listener_cfg = hikvision_cfg.get("listener", {})
-        listener_host = listener_cfg.get("host", "0.0.0.0")
-        listener_port = listener_cfg.get("port", 8099)
+    if callback_cfg:
+        dispatcher = HikvisionEventDispatcher(
+            processor=processor,
+            allowed_device_ids=allowed_devices,
+            logger=logger,
+        )
 
-        # Start callback listener if any device requires callback mode
-        if any(d.get("mode", "alert_stream") == "callback" for d in devices_cfg):
-            logger.info(
-                "🌐 Запуск Hikvision callback listener на %s:%s",
-                listener_host,
-                listener_port,
-            )
-            hk_app = create_hikvision_listener(hikvision_dispatcher, logger)
-            hikvision_runner = web.AppRunner(hk_app)
-            await hikvision_runner.setup()
-            site = web.TCPSite(hikvision_runner, listener_host, listener_port)
-            await site.start()
+        host = callback_cfg.get("host", "0.0.0.0")
+        port = callback_cfg.get("port", 8099)
 
-        # Start alert streams
-        for dev in devices_cfg:
-            if dev.get("mode", "alert_stream") != "alert_stream":
-                continue
-            stream = HikvisionAlertStream(
-                ip=dev.get("ip"),
-                username=dev.get("username", "admin"),
-                password=dev.get("password", ""),
-                dispatcher=hikvision_dispatcher,
-                name=dev.get("name"),
-                logger=logger,
-            )
-            hikvision_streams.append(stream)
-            hikvision_tasks.append(asyncio.create_task(stream.run()))
+        logger.info("🌐 Запуск Hikvision callback listener на %s:%s", host, port)
+
+        hk_app = create_hikvision_callback_app(dispatcher, hikvision_settings, logger)
+        hikvision_runner = web.AppRunner(hk_app)
+        await hikvision_runner.setup()
+        site = web.TCPSite(hikvision_runner, host, port)
+        await site.start()
 
     # Background tasks
     retry_task = asyncio.create_task(processor.retry_pending_events())
     tcp_task = asyncio.create_task(tcp_server.start())
     isapi_task = asyncio.create_task(isapi_server.start())
-    api_task = asyncio.create_task(isapi_server.start_api(host="0.0.0.0", port=server_cfg.health_check_port))
-    background_tasks = [retry_task, tcp_task, isapi_task, api_task, *hikvision_tasks]
+    api_task = asyncio.create_task(
+        isapi_server.start_api(host="0.0.0.0", port=server_cfg.health_check_port)
+    )
 
-    # Optional auto-configure terminals
-    if server_cfg.features.get("auto_configure_terminals", False):
-        webhook_base = isapi_cfg.get(
-            "webhook_base_url",
-            f"http://{isapi_cfg.get('host','0.0.0.0')}:{isapi_cfg.get('port',8082)}",
-        )
-        logger.info(f"🔧 Автонастройка терминалов включена, webhook_base={webhook_base}")
-        _ = asyncio.create_task(device_manager.auto_configure_terminals(webhook_base))
+    background_tasks = [retry_task, tcp_task, isapi_task, api_task]
 
-    # Graceful shutdown handling
+    # Graceful shutdown
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -180,24 +149,20 @@ async def main():
         try:
             loop.add_signal_handler(s, _on_signal)
         except NotImplementedError:
-            # Windows compatibility
             pass
 
     try:
         await shutdown.wait()
-    except Exception:
-        logger.exception("❌ Необработанное исключение, инициируем остановку")
     finally:
-        # Shutdown sequence
         logger.info("🧹 Остановка задач...")
-        for stream in hikvision_streams:
-            await stream.stop()
+
         for task in background_tasks:
             task.cancel()
-
         await asyncio.gather(*background_tasks, return_exceptions=True)
+
         if hikvision_runner:
             await hikvision_runner.cleanup()
+
         await tcp_server.stop()
         await isapi_server.stop()
         await storage.close()
