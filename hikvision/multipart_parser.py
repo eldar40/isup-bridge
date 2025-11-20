@@ -1,16 +1,20 @@
 """
 hikvision.multipart_parser
 
-Lightweight multipart parser for Hikvision ISAPI multipart streams (XML + images).
+Pure-Python multipart parser for Hikvision ISAPI multipart streams.
 """
 
-from typing import Dict, List, NamedTuple
+from __future__ import annotations
+
 import logging
+from dataclasses import dataclass
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
 
-class Part(NamedTuple):
+@dataclass
+class Part:
     """Represents a single multipart part.
 
     Attributes:
@@ -23,25 +27,29 @@ class Part(NamedTuple):
     body: bytes
     type: str
 
+    def to_dict(self) -> Dict[str, object]:
+        """Return a plain dictionary representation."""
+
+        return {"type": self.type, "headers": self.headers, "body": self.body}
+
 
 class MultipartParser:
     """A minimal multipart parser tuned for Hikvision ISAPI payloads.
 
     It accepts a raw byte stream and a boundary string (without leading `--`) and
-    returns a list of Part objects. The parser is intentionally lightweight and
+    returns a list of :class:`Part` objects. The parser is intentionally lightweight and
     focuses on common ISAPI patterns (XML event blocks and JPEG images).
     """
 
     @staticmethod
     def _parse_headers(raw: bytes) -> Dict[str, str]:
         """Parse HTTP-style headers block into a dict with lowercased keys."""
+
         headers: Dict[str, str] = {}
         try:
             lines = raw.split(b"\r\n")
             for line in lines:
-                if not line:
-                    continue
-                if b":" not in line:
+                if not line or b":" not in line:
                     continue
                 k, v = line.split(b":", 1)
                 key = k.decode("utf-8", errors="ignore").strip().lower()
@@ -54,6 +62,7 @@ class MultipartParser:
     @staticmethod
     def _detect_type(content_type: str, body: bytes) -> str:
         """Detect part type from Content-Type header or body heuristics."""
+
         if content_type:
             ct = content_type.lower()
             if "xml" in ct:
@@ -62,17 +71,16 @@ class MultipartParser:
                 return "json"
             if "jpeg" in ct or "jpg" in ct or ct.startswith("image/"):
                 return "image"
-        # Fallback heuristics
+
         trimmed = body.lstrip()
         if not trimmed:
             return "unknown"
         if trimmed.startswith(b"<"):
             return "xml"
         try:
-            trimmed.decode("utf-8")
-            # If decodes and starts with { or [ consider json
-            s = trimmed[:32].decode("utf-8", errors="ignore").lstrip()
-            if s.startswith("{") or s.startswith("["):
+            decoded = trimmed.decode("utf-8")
+            prefix = decoded.lstrip()[:1]
+            if prefix in ("{", "["):
                 return "json"
             return "xml"
         except Exception:
@@ -87,8 +95,9 @@ class MultipartParser:
             boundary: the boundary string (without initial `--`)
 
         Returns:
-            list of Part objects
+            list of :class:`Part` objects
         """
+
         parts: List[Part] = []
         if not boundary:
             logger.debug("No boundary provided to MultipartParser.parse")
@@ -96,33 +105,30 @@ class MultipartParser:
 
         try:
             b_boundary = ("--" + boundary).encode("utf-8")
-            # Split by boundary occurrences. Keep the raw pieces.
             segments = stream.split(b_boundary)
             for seg in segments:
-                if not seg or seg == b"--" or seg.strip() == b"":
+                if not seg or seg in (b"--", b""):
                     continue
-                # Each segment may begin with CRLF
-                if seg.startswith(b"\r\n"):
-                    seg = seg[2:]
-                # Remove trailing -- or CRLF
+                seg = seg.strip(b"\r\n")
+                if not seg or seg == b"--":
+                    continue
+
                 if seg.endswith(b"--"):
                     seg = seg[:-2]
-                if seg.endswith(b"\r\n"):
-                    seg = seg[:-2]
-                # Separate headers and body by first double CRLF
+
                 header_body = seg.split(b"\r\n\r\n", 1)
                 if len(header_body) == 2:
                     raw_headers, body = header_body
                     headers = MultipartParser._parse_headers(raw_headers)
                 else:
-                    # No headers, treat entire segment as body
                     headers = {}
-                    body = seg.strip(b"\r\n")
+                    body = seg
 
                 content_type = headers.get("content-type", "")
                 ptype = MultipartParser._detect_type(content_type, body)
                 parts.append(Part(headers=headers, body=body, type=ptype))
         except Exception:
             logger.exception("Failed to parse multipart stream")
+
         logger.debug("MultipartParser.parse produced %d parts (boundary=%s)", len(parts), boundary)
         return parts

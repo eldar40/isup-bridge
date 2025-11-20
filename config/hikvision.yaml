@@ -1,0 +1,9 @@
+devices:
+  - name: "device1"
+    ip: "192.168.1.xxx"
+    username: "admin"
+    password: "your_password"
+    mode: "alert_stream"   # or "callback"
+listener:
+  host: "0.0.0.0"
+  port: 8099
