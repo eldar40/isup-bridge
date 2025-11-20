@@ -11,6 +11,7 @@ import signal
 from pathlib import Path
 
 import yaml
+from aiohttp import web
 
 from core.metrics import ServerMetrics
 from core.storage import EventStorage
@@ -24,11 +25,17 @@ from isapi.isapi_server import (
     ISAPIDeviceManager,
     ISAPITerminalManager,
 )
+from hikvision import (
+    HikvisionAlertStream,
+    HikvisionEventDispatcher,
+    create_hikvision_listener,
+)
 from utils.logging_setup import setup_logging
 
 # ================ Константы и базовые пути ==================
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+HIKVISION_CONFIG_PATH = PROJECT_ROOT / "config" / "hikvision.yaml"
 
 
 # ================ Конфигурация =============================
@@ -62,6 +69,12 @@ async def main():
     server_cfg, full_cfg = ServerConfig.load_from_file(config_path)
     logger = setup_logging(server_cfg.log_level)
     logger.info("🚀 Запуск ISUP / ISAPI Bridge (вариант B)")
+
+    # Optional Hikvision configuration
+    hikvision_cfg = {}
+    if HIKVISION_CONFIG_PATH.exists():
+        with open(HIKVISION_CONFIG_PATH, "r", encoding="utf-8") as f:
+            hikvision_cfg = yaml.safe_load(f) or {}
 
     # Metrics & Storage
     metrics = ServerMetrics()
@@ -99,12 +112,52 @@ async def main():
     isapi_server = ISAPIWebhookServer(webhook_handler, full_cfg, logger)
     device_manager = ISAPIDeviceManager(full_cfg, logger)
 
+    # Hikvision dispatcher and runtime containers
+    hikvision_dispatcher = HikvisionEventDispatcher(logger)
+    hikvision_streams = []
+    hikvision_tasks = []
+    hikvision_runner = None
+
+    devices_cfg = hikvision_cfg.get("devices", [])
+    if devices_cfg:
+        listener_cfg = hikvision_cfg.get("listener", {})
+        listener_host = listener_cfg.get("host", "0.0.0.0")
+        listener_port = listener_cfg.get("port", 8099)
+
+        # Start callback listener if any device requires callback mode
+        if any(d.get("mode", "alert_stream") == "callback" for d in devices_cfg):
+            logger.info(
+                "🌐 Запуск Hikvision callback listener на %s:%s",
+                listener_host,
+                listener_port,
+            )
+            hk_app = create_hikvision_listener(hikvision_dispatcher, logger)
+            hikvision_runner = web.AppRunner(hk_app)
+            await hikvision_runner.setup()
+            site = web.TCPSite(hikvision_runner, listener_host, listener_port)
+            await site.start()
+
+        # Start alert streams
+        for dev in devices_cfg:
+            if dev.get("mode", "alert_stream") != "alert_stream":
+                continue
+            stream = HikvisionAlertStream(
+                ip=dev.get("ip"),
+                username=dev.get("username", "admin"),
+                password=dev.get("password", ""),
+                dispatcher=hikvision_dispatcher,
+                name=dev.get("name"),
+                logger=logger,
+            )
+            hikvision_streams.append(stream)
+            hikvision_tasks.append(asyncio.create_task(stream.run()))
+
     # Background tasks
     retry_task = asyncio.create_task(processor.retry_pending_events())
     tcp_task = asyncio.create_task(tcp_server.start())
     isapi_task = asyncio.create_task(isapi_server.start())
     api_task = asyncio.create_task(isapi_server.start_api(host="0.0.0.0", port=server_cfg.health_check_port))
-    background_tasks = [retry_task, tcp_task, isapi_task, api_task]
+    background_tasks = [retry_task, tcp_task, isapi_task, api_task, *hikvision_tasks]
 
     # Optional auto-configure terminals
     if server_cfg.features.get("auto_configure_terminals", False):
@@ -137,10 +190,14 @@ async def main():
     finally:
         # Shutdown sequence
         logger.info("🧹 Остановка задач...")
+        for stream in hikvision_streams:
+            await stream.stop()
         for task in background_tasks:
             task.cancel()
 
         await asyncio.gather(*background_tasks, return_exceptions=True)
+        if hikvision_runner:
+            await hikvision_runner.cleanup()
         await tcp_server.stop()
         await isapi_server.stop()
         await storage.close()
