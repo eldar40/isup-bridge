@@ -231,6 +231,8 @@ curl -X POST -d "@event.xml" http://YOUR_SERVER:8002/ISAPI/Event/notification/al
 5) Проверка:
    - `/health` на порту health_check из `config.yaml`.
    - Логи в `/opt/isup_bridge/logs/` (создаются автоматически).
+   - `journalctl -u isup-bridge.service -f` должен показывать строки о запуске ISUP TCP и ISAPI Webhook серверов (например, сообщения
+     `ISUP TCP server listening` и `ISAPI Webhook server started`).
 
 
 ⸻
