@@ -15,11 +15,16 @@ from typing import Dict, List, Optional, Any
 
 class EventStorage:
 
-    def __init__(self, directory: str, max_days: int = 30):
+    def __init__(
+        self,
+        directory: str,
+        max_days: int = 30,
+        logger: Optional[logging.Logger] = None,
+    ):
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
 
-        self.log = logging.getLogger(self.__class__.__name__)
+        self.log = logger or logging.getLogger(self.__class__.__name__)
         self.lock = asyncio.Lock()
         self.max_days = max_days
 
@@ -113,3 +118,11 @@ class EventStorage:
                     self.log.info(f"🧹 Removed old pending file: {file.name}")
             except Exception as e:
                 self.log.error(f"Cleanup error for {file}: {e}")
+
+    # =====================================================================
+    # CLOSE STORAGE
+    # =====================================================================
+
+    async def close(self):
+        """Завершает работу хранилища (очистка старых файлов)."""
+        await self.cleanup_old()

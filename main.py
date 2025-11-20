@@ -91,7 +91,7 @@ async def main():
 
     # Metrics & Storage
     metrics = ServerMetrics()
-    storage = EventStorage(server_cfg.storage_path, logger)
+    storage = EventStorage(server_cfg.storage_path, server_cfg.max_pending_days, logger)
 
     # Tenant & Terminal managers
     tenant_manager = TenantManager(full_cfg)
@@ -114,6 +114,7 @@ async def main():
         port=server_cfg.port,
         processor=processor,
         metrics=metrics,
+        parser=isup_parser,
         logger=logger
     )
 

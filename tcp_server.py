@@ -11,10 +11,18 @@ from typing import Optional
 
 class ISUPTCPServer:
 
-    def __init__(self, host: str, port: int, event_processor, metrics, parser, logger: Optional[logging.Logger] = None):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        processor,
+        metrics,
+        parser,
+        logger: Optional[logging.Logger] = None,
+    ):
         self.host = host
         self.port = port
-        self.processor = event_processor
+        self.processor = processor
         self.metrics = metrics
         self.parser = parser
         self.log = logger or logging.getLogger(self.__class__.__name__)
