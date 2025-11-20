@@ -1,8 +1,8 @@
 devices:
-  - name: "device1"
-    ip: "192.168.1.xxx"
+  - name: "GA4818739"
+    ip: "37.18.105.89"
     username: "admin"
-    password: "your_password"
+    password: "Ee40060840"
     mode: "alert_stream"   # or "callback"
 listener:
   host: "0.0.0.0"
