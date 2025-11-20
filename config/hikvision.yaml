@@ -1,9 +1,13 @@
 devices:
   - name: "GA4818739"
     ip: "37.18.105.89"
+    port: 80                # ISAPI HTTP порт
+    protocol: "http"        # принудительно HTTP, не https
+    ssl: false              # отключаем проверку SSL полностью
     username: "admin"
     password: "Ee40060840"
-    mode: "alert_stream"   # or "callback"
+    mode: "alert_stream"    # режим получения событий
+
 listener:
   host: "0.0.0.0"
   port: 8099
