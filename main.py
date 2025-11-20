@@ -9,54 +9,27 @@ import asyncio
 import logging
 import signal
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
-from metrics import ServerMetrics
-from storage import EventStorage
-from tenant_manager import TenantManager
-from isup_protocol import ISUPv5Parser
-from event_processor import EventProcessor
-from tcp_server import ISUPTCPServer
-from isapi_server import ISAPIWebhookServer, ISAPIWebhookHandler, ISAPIDeviceManager, ISAPITerminalManager
-from isapi_client import ISAPIEvent
+from core.metrics import ServerMetrics
+from core.storage import EventStorage
+from core.tenant_manager import TenantManager
+from core.processor import EventProcessor
+from isup.isup_protocol import ISUPv5Parser
+from isup.isup_server import ISUPTCPServer
+from isapi.isapi_server import (
+    ISAPIWebhookServer,
+    ISAPIWebhookHandler,
+    ISAPIDeviceManager,
+    ISAPITerminalManager,
+)
+from utils.logging_setup import setup_logging
 
 # ================ Константы и базовые пути ==================
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
-LOG_DIR = PROJECT_ROOT / "logs"
-LOG_DIR.mkdir(exist_ok=True, parents=True)
 
-# ================ Логирование ==============================
-def setup_logging(level: str = "INFO") -> logging.Logger:
-    logger = logging.getLogger("isup_bridge")
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-
-    fmt = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-
-    # Console
-    ch = logging.StreamHandler()
-    ch.setFormatter(fmt)
-    ch.setLevel(getattr(logging, level.upper(), logging.INFO))
-    logger.addHandler(ch)
-
-    # File
-    fh = logging.FileHandler(LOG_DIR / "isup_bridge.log", encoding="utf-8")
-    fh.setFormatter(fmt)
-    fh.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
-
-    # Errors file
-    eh = logging.FileHandler(LOG_DIR / "errors.log", encoding="utf-8")
-    eh.setFormatter(fmt)
-    eh.setLevel(logging.ERROR)
-    logger.addHandler(eh)
-
-    return logger
 
 # ================ Конфигурация =============================
 class ServerConfig:
@@ -77,6 +50,7 @@ class ServerConfig:
         with open(path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         return cls(cfg), cfg
+
 
 # ================ Main async entry =========================
 async def main():
@@ -105,7 +79,7 @@ async def main():
         storage=storage,
         metrics=metrics,
         logger=logger,
-        isup_parser=isup_parser
+        isup_parser=isup_parser,
     )
 
     # TCP (ISUP) Server
@@ -115,7 +89,7 @@ async def main():
         processor=processor,
         metrics=metrics,
         parser=isup_parser,
-        logger=logger
+        logger=logger,
     )
 
     # ISAPI Webhook components
@@ -133,7 +107,10 @@ async def main():
 
     # Optional auto-configure terminals
     if server_cfg.features.get("auto_configure_terminals", False):
-        webhook_base = isapi_cfg.get("webhook_base_url", f"http://{isapi_cfg.get('host','0.0.0.0')}:{isapi_cfg.get('port',8082)}")
+        webhook_base = isapi_cfg.get(
+            "webhook_base_url",
+            f"http://{isapi_cfg.get('host','0.0.0.0')}:{isapi_cfg.get('port',8082)}",
+        )
         logger.info(f"🔧 Автонастройка терминалов включена, webhook_base={webhook_base}")
         _ = asyncio.create_task(device_manager.auto_configure_terminals(webhook_base))
 
@@ -163,6 +140,7 @@ async def main():
     await storage.close()
 
     logger.info("👋 ISUP Bridge остановлен")
+
 
 if __name__ == "__main__":
     try:

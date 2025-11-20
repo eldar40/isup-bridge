@@ -10,8 +10,7 @@ from aiohttp import web
 import logging
 from typing import Dict, Any, Optional
 
-from isapi_client import ISAPIEventParser
-from tenant_manager import TenantManager
+from isapi.isapi_client import ISAPIEventParser
 
 
 # ============================================================

@@ -23,18 +23,24 @@ ISUP/ISAPI Bridge — это высоконадежный серверный м�
 
 ⚙️ Архитектура проекта
 
-isup_bridge/
-│── main.py                # Точка входа
-│── tcp_server.py          # ISUP TCP сервер
-│── isup_protocol.py       # Парсер ISUP v5 + генерация ACK
-│── isapi_server.py        # HTTP сервер ISAPI Webhook
-│── isapi_client.py        # ISAPI Event parser + терминалы
-│── tenant_manager.py      # Управление объектами/1С
-│── event_processor.py     # Унификация событий и отправка в 1С
-│── storage.py             # Локальное хранилище pending-событий
-│── metrics.py             # Метрики
-│── config.yaml            # Конфигурация объектов, устройств, 1С
-└── storage/               # Очередь неотправленных событий
+/opt/isup_bridge/
+│── main.py                   # Точка входа
+│── core/
+│     ├── processor.py        # Унификация событий и отправка в 1С
+│     ├── storage.py          # Локальное хранилище pending-событий
+│     ├── tenant_manager.py   # Управление объектами/1С
+│     └── metrics.py          # Метрики
+│── isup/
+│     ├── isup_protocol.py    # Парсер ISUP v5 + генерация ACK
+│     └── isup_server.py      # ISUP TCP сервер
+│── isapi/
+│     ├── isapi_client.py     # ISAPI Event parser + терминалы
+│     └── isapi_server.py     # HTTP сервер ISAPI Webhook
+│── utils/
+│     └── logging_setup.py    # Единая настройка логирования
+│── config/
+│     └── config.yaml         # Конфигурация объектов, устройств, 1С
+└── requirements.txt          # Зависимости проекта
 
 
 ⸻
@@ -197,6 +203,34 @@ nc YOUR_SERVER 8001 < sample_isup_packet.bin
 ISAPI:
 
 curl -X POST -d "@event.xml" http://YOUR_SERVER:8002/ISAPI/Event/notification/alert
+
+⸻
+
+🛠 Обновление сервера и systemd
+
+1) Зафиксируйте новую структуру в каталоге `/opt/isup_bridge` (ветки `main`, `master` и `codex` должны содержать идентичное дерево выше).
+2) Обновите зависимости:
+   ```bash
+   cd /opt/isup_bridge
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+3) Убедитесь, что unit-файл systemd указывает на единый вход `main.py`:
+   ```ini
+   [Service]
+   WorkingDirectory=/opt/isup_bridge
+   ExecStart=/opt/isup_bridge/.venv/bin/python /opt/isup_bridge/main.py
+   ```
+4) Перезапустите службу:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart isup-bridge.service
+   sudo systemctl status isup-bridge.service
+   ```
+5) Проверка:
+   - `/health` на порту health_check из `config.yaml`.
+   - Логи в `/opt/isup_bridge/logs/` (создаются автоматически).
 
 
 ⸻
