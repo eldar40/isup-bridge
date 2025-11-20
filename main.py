@@ -104,6 +104,7 @@ async def main():
     tcp_task = asyncio.create_task(tcp_server.start())
     isapi_task = asyncio.create_task(isapi_server.start())
     api_task = asyncio.create_task(isapi_server.start_api(host="0.0.0.0", port=server_cfg.health_check_port))
+    background_tasks = [retry_task, tcp_task, isapi_task, api_task]
 
     # Optional auto-configure terminals
     if server_cfg.features.get("auto_configure_terminals", False):
@@ -129,15 +130,20 @@ async def main():
             # Windows compatibility
             pass
 
-    await shutdown.wait()
+    try:
+        await shutdown.wait()
+    except Exception:
+        logger.exception("❌ Необработанное исключение, инициируем остановку")
+    finally:
+        # Shutdown sequence
+        logger.info("🧹 Остановка задач...")
+        for task in background_tasks:
+            task.cancel()
 
-    # Shutdown sequence
-    logger.info("🧹 Остановка задач...")
-    for task in (retry_task, tcp_task, isapi_task, api_task):
-        task.cancel()
-    await tcp_server.stop()
-    await isapi_server.stop()
-    await storage.close()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
+        await tcp_server.stop()
+        await isapi_server.stop()
+        await storage.close()
 
     logger.info("👋 ISUP Bridge остановлен")
 
