@@ -5,7 +5,6 @@ ISAPI Webhook Server — полностью переписанная прода�
 """
 
 import asyncio
-import aiohttp
 from aiohttp import web
 import logging
 from typing import Dict, Any, Optional
@@ -163,100 +162,6 @@ class ISAPIWebhookServer:
 
 
 # ============================================================
-# ISAPI Device Manager
-# ============================================================
-
-class ISAPIDeviceManager:
-    """
-    Управление устройствами Hikvision:
-    - проверка активации
-    - включение событий
-    - регистрация webhooks
-    """
-    def __init__(self, cfg: dict, logger: logging.Logger):
-        self.cfg = cfg.get("isapi", {})
-        self.terminals = cfg.get("terminals", [])
-        self.log = logger
-
-    # --------------------------------------------------------
-    # Activation check
-    # --------------------------------------------------------
-
-    async def check_activation(self, ip: str) -> bool:
-        url = f"http://{ip}/SDK/activateStatus"
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url, timeout=3) as r:
-                    text = await r.text()
-                    return "<activated>true</activated>" in text
-        except Exception:
-            return False
-
-    # --------------------------------------------------------
-    # Register webhook URL
-    # --------------------------------------------------------
-
-    async def configure_webhook(self, ip: str, webhook_url: str) -> bool:
-        """
-        Конфигурирует push-event нотификацию:
-        POST /ISAPI/Event/notification/subscribe
-        """
-        payload = f"""
-        <EventNotificationAlert>
-            <id>1</id>
-            <addressingMode>ipaddress</addressingMode>
-            <ipAddress>{webhook_url}</ipAddress>
-            <protocolType>HTTP</protocolType>
-            <httpAuthentication>anonymous</httpAuthentication>
-            <eventTypes>
-                <eventType>AccessControllerEvent</eventType>
-            </eventTypes>
-        </EventNotificationAlert>
-        """
-
-        url = f"http://{ip}/ISAPI/Event/notification/subscribe"
-
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.put(url, data=payload, timeout=5) as r:
-                    ok = (r.status in (200, 201, 204))
-                    if ok:
-                        self.log.info(f"Webhook for {ip} set to {webhook_url}")
-                    else:
-                        text = await r.text()
-                        self.log.error(f"Webhook configure failed for {ip}: {text}")
-                    return ok
-        except Exception as e:
-            self.log.error(f"Webhook configure error: {ip} → {e}")
-            return False
-
-    # --------------------------------------------------------
-    # Auto configure
-    # --------------------------------------------------------
-
-    async def auto_configure_terminals(self, webhook_base: str):
-        """
-        Автоматически настраивает все терминалы из config.yaml.
-        """
-        for t in self.terminals:
-            ip = t.get("ip")
-            if not ip:
-                continue
-
-            webhook_url = f"{webhook_base}/"
-            activated = await self.check_activation(ip)
-
-            if not activated:
-                self.log.warning(f"⚠️ Терминал {ip} не активирован (activateStatus=false)")
-                continue
-
-            ok = await self.configure_webhook(ip, webhook_url)
-            if ok:
-                self.log.info(f"Терминал {ip} настроен успешно")
-            else:
-                self.log.error(f"Не удалось настроить терминал {ip}")
-
-
 # ============================================================
 # ISAPI Terminal Manager
 # ============================================================

@@ -6,18 +6,18 @@ from hikvision.alert_stream import HikvisionAlertStream
 from hikvision.event_dispatcher import HikvisionEventDispatcher
 
 
-class DummyDispatcher(HikvisionEventDispatcher):
+class DummyProcessor:
     def __init__(self):
-        super().__init__()
         self.events = []
 
-    def handle_event(self, event_dict):
-        self.events.append(event_dict)
+    async def enqueue_event(self, event):
+        self.events.append(event)
 
 
 @pytest.mark.asyncio
 async def test_alert_stream_process_buffer_parses_events():
-    dispatcher = DummyDispatcher()
+    processor = DummyProcessor()
+    dispatcher = HikvisionEventDispatcher(processor)
     stream = HikvisionAlertStream("127.0.0.1", "user", "pass", dispatcher)
 
     boundary = "mybnd"
@@ -28,6 +28,8 @@ async def test_alert_stream_process_buffer_parses_events():
     )
 
     remainder = await stream._process_buffer(data, boundary)
+    await asyncio.sleep(0)  # allow handle_event task to run
+
     assert remainder == b""
-    assert dispatcher.events
-    assert dispatcher.events[0].get("eventType") == "heartBeat"
+    assert processor.events
+    assert processor.events[0].get("eventType") == "heartBeat"

@@ -5,8 +5,12 @@ ISAPI Event Parser — полностью корректная реализац�
 """
 
 import logging
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, Sequence
+from urllib.parse import urlsplit
+
+import aiohttp
 import xml.etree.ElementTree as ET
-from typing import Dict, Any, Optional
 
 
 class ISAPIEvent:
@@ -138,3 +142,134 @@ class ISAPIEventParser:
             image_ids=image_ids,
             raw_xml=xml_text
         )
+
+
+# ============================================================
+# ISAPI Device HTTP client
+# ============================================================
+
+
+@dataclass
+class DeviceInfo:
+    device_id: Optional[str]
+    model: Optional[str]
+
+
+class ISAPIDeviceClient:
+    """Lightweight async client for configuring Hikvision terminals over ISAPI."""
+
+    def __init__(self, host: str, port: int, username: str, password: str, logger: logging.Logger):
+        self.host = host
+        self.port = port
+        self.auth = aiohttp.BasicAuth(username or "", password or "")
+        self.base_url = f"http://{host}:{port}"
+        self.log = logger
+
+    async def is_reachable(self) -> bool:
+        """Checks whether device responds to System/deviceInfo request."""
+
+        url = f"{self.base_url}/ISAPI/System/deviceInfo"
+        try:
+            timeout = aiohttp.ClientTimeout(total=3)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, auth=self.auth) as resp:
+                    return resp.status < 400
+        except Exception:
+            return False
+
+    async def get_device_info(self) -> Optional[DeviceInfo]:
+        url = f"{self.base_url}/ISAPI/System/deviceInfo"
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get(url, auth=self.auth) as resp:
+                    if resp.status >= 400:
+                        self.log.error("Failed to read deviceInfo from %s (HTTP %s)", self.host, resp.status)
+                        return None
+                    xml = await resp.text()
+        except Exception as e:
+            self.log.error("deviceInfo request failed for %s: %s", self.host, e)
+            return None
+
+        try:
+            root = ET.fromstring(xml)
+            device_id = root.findtext("deviceID")
+            model = root.findtext("model")
+            return DeviceInfo(device_id=device_id, model=model)
+        except Exception as e:
+            self.log.error("Failed to parse deviceInfo for %s: %s", self.host, e)
+            return None
+
+    # ------------------------------------------------------------
+    # HTTP host configuration
+    # ------------------------------------------------------------
+    def build_http_host_payload(self, callback_url: str, host_id: int = 1) -> str:
+        parsed = urlsplit(callback_url)
+        ip_addr = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        path = parsed.path or "/"
+
+        payload = f"""
+<HttpHostNotification version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+    <id>{host_id}</id>
+    <enabled>true</enabled>
+    <addressingFormatType>ipaddress</addressingFormatType>
+    <ipAddress>{ip_addr}</ipAddress>
+    <portNo>{port}</portNo>
+    <protocolType>HTTP</protocolType>
+    <url>{path}</url>
+    <httpAuthenticationMethod>digest</httpAuthenticationMethod>
+</HttpHostNotification>
+"""
+        return payload.strip()
+
+    async def configure_http_host(self, callback_url: str, host_id: int = 1) -> bool:
+        payload = self.build_http_host_payload(callback_url, host_id)
+        url = f"{self.base_url}/ISAPI/Event/notification/httpHosts/{host_id}"
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.put(url, data=payload, auth=self.auth) as resp:
+                    if resp.status in (200, 201, 204):
+                        self.log.info("HTTP host notification configured for %s", self.host)
+                        return True
+                    body = await resp.text()
+                    self.log.error("Failed to configure httpHost on %s: HTTP %s → %s", self.host, resp.status, body)
+                    return False
+        except Exception as e:
+            self.log.error("Error configuring httpHost on %s: %s", self.host, e)
+            return False
+
+    # ------------------------------------------------------------
+    # Event enabling
+    # ------------------------------------------------------------
+    def build_event_subscription_payload(self, event_types: Sequence[str], host_id: int = 1) -> str:
+        entries = "\n".join(
+            f"    <EventTriggerNotification>\n"
+            f"        <id>{idx + 1}</id>\n"
+            f"        <eventType>{evt}</eventType>\n"
+            f"        <eventDescription>auto</eventDescription>\n"
+            f"        <protocolType>HTTP</protocolType>\n"
+            f"        <httpHostId>{host_id}</httpHostId>\n"
+            f"        <triggerState>true</triggerState>\n"
+            f"    </EventTriggerNotification>" for idx, evt in enumerate(event_types)
+        )
+        payload = f"""
+<EventTriggerNotificationList version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
+{entries}
+</EventTriggerNotificationList>
+"""
+        return payload.strip()
+
+    async def enable_events(self, event_types: Sequence[str], host_id: int = 1) -> bool:
+        payload = self.build_event_subscription_payload(event_types, host_id)
+        url = f"{self.base_url}/ISAPI/Event/notification/trigger"
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.put(url, data=payload, auth=self.auth) as resp:
+                    if resp.status in (200, 201, 204):
+                        self.log.info("Enabled event types on %s: %s", self.host, ",".join(event_types))
+                        return True
+                    self.log.error("Failed to enable events on %s: HTTP %s", self.host, resp.status)
+                    return False
+        except Exception as e:
+            self.log.error("Error enabling events on %s: %s", self.host, e)
+            return False

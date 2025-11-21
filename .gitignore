@@ -1,3 +1,7 @@
 logs/
 pending_events/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
 *.backup
