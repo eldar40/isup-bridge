@@ -66,6 +66,12 @@ class EventProcessor:
             self.metrics.events_failed += 1
             return False
 
+    async def enqueue_event(self, event: Dict[str, Any]) -> None:
+        """Push callback-parsed event into the unified processing pipeline."""
+
+        normalized = self._normalize_callback_event(event)
+        await self.process_isapi_event(normalized, event.get("client_ip", "callback"))
+
     # =====================================================================
 
     async def process_isup_packet(self, packet: bytes, client_ip: str) -> bool:
@@ -122,6 +128,33 @@ class EventProcessor:
             "reader_id": event.reader_number,
             "client_ip": client_ip,
         }
+
+    def _normalize_callback_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(event)
+        normalized["event_source"] = normalized.get("event_source") or "HIKVISION_CALLBACK"
+        normalized["timestamp"] = (
+            normalized.get("timestamp")
+            or normalized.get("eventDateTime")
+            or normalized.get("dateTime")
+        )
+
+        device_id = normalized.get("deviceID") or normalized.get("device_id")
+        if device_id and "device_id" not in normalized:
+            normalized["device_id"] = device_id
+
+        if not normalized.get("mac_address") and device_id:
+            normalized["mac_address"] = device_id
+
+        major = normalized.get("majorEventType") or normalized.get("major_event_type")
+        minor = normalized.get("minorEventType") or normalized.get("minor_event_type")
+        if major:
+            normalized["major_event_type"] = major
+        if minor:
+            normalized["minor_event_type"] = minor
+
+        if "picData" in normalized and isinstance(normalized["picData"], (bytes, bytearray)):
+            normalized["image_buffer"] = normalized["picData"]
+        return normalized
 
     # =====================================================================
     # RETRY PENDING EVENTS

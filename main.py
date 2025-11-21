@@ -9,6 +9,7 @@ import asyncio
 import logging
 import signal
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from aiohttp import web
@@ -19,15 +20,11 @@ from core.tenant_manager import TenantManager
 from core.processor import EventProcessor
 from isup.isup_protocol import ISUPv5Parser
 from isup.isup_server import ISUPTCPServer
-from isapi.isapi_server import (
-    ISAPIWebhookServer,
-    ISAPIWebhookHandler,
-    ISAPIDeviceManager,
-    ISAPITerminalManager,
-)
+from isapi.isapi_server import ISAPIWebhookServer, ISAPIWebhookHandler, ISAPITerminalManager
+from isapi.isapi_device_manager import ISAPIDeviceManager
 
 # NEW — callback only
-from hikvision import HikvisionEventDispatcher, create_hikvision_callback_app
+from hikvision import HikvisionEventDispatcher, create_hikvision_listener
 
 from utils.logging_setup import setup_logging
 
@@ -69,7 +66,7 @@ async def main():
     if HIKVISION_CONFIG_PATH.exists():
         with open(HIKVISION_CONFIG_PATH, "r", encoding="utf-8") as f:
             hikvision_cfg = yaml.safe_load(f) or {}
-    hikvision_settings = hikvision_cfg.get("hikvision", {})
+    hikvision_settings = hikvision_cfg.get("hikvision", hikvision_cfg)
 
     # Core components
     metrics = ServerMetrics()
@@ -106,10 +103,12 @@ async def main():
 
     # ================ HIKVISION CALLBACK MODE ====================
     hikvision_runner = None
-    callback_cfg = hikvision_settings.get("callback", {})
+    callback_cfg = hikvision_settings.get("callback", hikvision_settings.get("listener", {}))
     allowed_devices = hikvision_settings.get("allowed_device_ids", [])
+    devices_cfg = hikvision_settings.get("devices", [])
+    callback_mode = any(d.get("mode") == "callback" for d in devices_cfg)
 
-    if callback_cfg:
+    if callback_mode and callback_cfg:
         dispatcher = HikvisionEventDispatcher(
             processor=processor,
             allowed_device_ids=allowed_devices,
@@ -119,13 +118,19 @@ async def main():
         host = callback_cfg.get("host", "0.0.0.0")
         port = callback_cfg.get("port", 8099)
 
-        logger.info("🌐 Запуск Hikvision callback listener на %s:%s", host, port)
+        logger.info("Callback server started on %s:%s", host, port)
 
-        hk_app = create_hikvision_callback_app(dispatcher, hikvision_settings, logger)
+        hk_app = create_hikvision_listener(dispatcher, hikvision_settings, logger)
         hikvision_runner = web.AppRunner(hk_app)
         await hikvision_runner.setup()
         site = web.TCPSite(hikvision_runner, host, port)
         await site.start()
+
+    if server_cfg.features.get("auto_configure_terminals"):
+        raw_base = isapi_cfg.get("webhook_base_url") or f"http://{server_cfg.host}:{isapi_cfg.get('port', 8002)}"
+        parsed = urlsplit(raw_base)
+        webhook_base = f"{parsed.scheme}://{parsed.netloc}"
+        asyncio.create_task(device_manager.auto_configure_terminals(webhook_base))
 
     # Background tasks
     retry_task = asyncio.create_task(processor.retry_pending_events())
