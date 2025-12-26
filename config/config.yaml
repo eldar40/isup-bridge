@@ -1,170 +1,33 @@
-# ============================================================
-# ISUP + ISAPI BRIDGE CONFIGURATION (FINAL VERSION)
-# ============================================================
-
-# ------------------------------------------------------------
-# SERVER SETTINGS
-# ------------------------------------------------------------
 server:
-  host: "0.0.0.0"
-  port: 8001                   # Порт для ISUP TCP
-  health_check_port: 8081      # Порт для HTTP API
-  log_level: "INFO"
-  storage_path: "./storage"    # Локальная очередь событий
+  host: 0.0.0.0
+  port: 8001          # ISUP TCP
+  health_check_port: 8081
+  log_level: INFO
+  storage_path: ./data/storage
   max_pending_days: 30
 
-# ------------------------------------------------------------
-# ISAPI (HIKVISION EVENT NOTIFICATION)
-# ------------------------------------------------------------
 isapi:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8002                   # Webhook для уведомлений ISAPI
-  webhook_path: "/ISAPI/Event/notification/alert"
+  host: 0.0.0.0
+  port: 8002          # Webhook listener
+  webhook_path: /isapi/webhook
+  webhook_secret: change-me
+  webhook_base_url: http://localhost:8002
+  event_types:
+    - accessControllerEvent
 
-  username: "admin"
-  password: "CHANGE_ME"
-  webhook_secret: ""           # Можно пусто (необязательно)
-
-  # URL, который терминалы будут вызывать
-  webhook_base_url: "http://YOUR_PUBLIC_IP:8002/ISAPI/Event/notification/alert"
-
-
-# ------------------------------------------------------------
-# OBJECTS / TENANTS / 1C INTEGRATION
-# ------------------------------------------------------------
-
-objects:
-
-  # ==========================================================
-  #  ОБЪЕКТ 1 — ГЛАВНЫЙ ОФИС МОСКВА
-  # ==========================================================
-
-  - object_id: "moscow_hq"
-    name: "Главный офис Москва"
-    address: "Москва, ул. Тверская, 1"
-    description: "Центральный офис"
-
-    # 1С:Учет рабочего времени
-    c1:
-      base_url: "https://1c.company.ru"
-      endpoint: "/hs/access/events"
-      username: "bridge_user"
-      password: "CHANGE_ME"
-      timeout: 15
-      max_retries: 3
-      retry_delay: 5
-
-    # ------------------------
-    # ISAPI TERMINALS
-    # ------------------------
-    terminals:
-      - terminal_id: "hq_main_entrance"
-        ip_address: "192.168.10.10"
-        mac_address: "00:11:22:33:44:55"
-        model: "DS-K1T671MF"
-        description: "Вход в офис"
-        type: "face"
-        direction: "in"
-        location: "1 этаж, главный вход"
-
-      - terminal_id: "hq_main_exit"
-        ip_address: "192.168.10.11"
-        mac_address: "00:11:22:33:44:56"
-        model: "DS-K1T671MF"
-        description: "Выход из офиса"
-        type: "face"
-        direction: "out"
-        location: "1 этаж, выход"
-
-    # ------------------------
-    # ISUP CONTROLLERS
-    # ------------------------
-    devices:
-      - device_id: "343831383733390D"
-        description: "Турникет №1"
-        type: "turnstile"
-        direction: "in"
-        location: "1 этаж"
-
-      - device_id: "9F83AB1234567890"
-        description: "Турникет №2"
-        type: "turnstile"
-        direction: "out"
-        location: "1 этаж"
-
-  # ==========================================================
-  #  ОБЪЕКТ 2 — ФИЛИАЛ СПБ
-  # ==========================================================
-
-  - object_id: "spb_branch"
-    name: "Филиал Санкт-Петербург"
-    address: "СПб, Невский пр. 100"
-
-    c1:
-      base_url: "https://1c-spb.company.ru"
-      endpoint: "/hs/access/events"
-      username: "bridge_user"
-      password: "CHANGE_ME_2"
-
-    terminals:
-      - terminal_id: "spb_entrance"
-        ip_address: "192.168.20.10"
-        mac_address: "00:11:22:AA:BB:CC"
-        model: "DS-K1T671MF"
-        description: "Вход"
-        type: "face"
-        direction: "in"
-        location: "1 этаж"
-
-    devices:
-      - device_id: "ABCD1234ABCD1234"
-        description: "Турникет СПБ"
-        type: "turnstile"
-        direction: "in"
-        location: "1 этаж"
-
-# ------------------------------------------------------------
-# DEFAULT OBJECT (если устройство не найдено)
-# ------------------------------------------------------------
-default_object:
-  object_id: "default"
-  name: "Неизвестные устройства"
-  description: "Автоматическое сопоставление"
-
-  c1:
-    base_url: "https://sova07.ru:8880"
-    endpoint: "/hs/access/events"
-    username: "bridge_user"
-    password: "DEFAULT_PASS"
-    timeout: 15
-    max_retries: 3
-    retry_delay: 5
-
-# ------------------------------------------------------------
-# SECURITY
-# ------------------------------------------------------------
-security:
-  allowed_ips:
-    - "192.168.10.0/24"
-    - "192.168.20.0/24"
-    - "10.0.0.0/8"
-    - "37.18.105.89"   # твой контроллер
-
-  verify_ssl: false
-  log_sensitive: false
-
-# ------------------------------------------------------------
-# FEATURES
-# ------------------------------------------------------------
 features:
   auto_configure_terminals: false
-  auto_create_objects: false
-  detailed_logging: true
 
-# ------------------------------------------------------------
-# METRICS / MONITORING
-# ------------------------------------------------------------
-monitoring:
-  prometheus_enabled: false
-  health_check_interval: 30
+objects:
+  - object_id: demo
+    c1:
+      base_url: http://localhost:9000
+      endpoint: /events
+      username: user
+      password: pass
+    terminals:
+      - ip: 192.168.0.10
+        port: 80
+        username: admin
+        password: 12345
+        device_id: device-1

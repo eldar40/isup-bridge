@@ -1,42 +1,16 @@
 import logging
-from pathlib import Path
-
-
-LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
-LOG_DIR.mkdir(exist_ok=True, parents=True)
+import sys
 
 
 def setup_logging(level: str = "INFO") -> logging.Logger:
-    logger = logging.getLogger("isup_bridge")
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    fmt = "%(asctime)s | %(levelname)-5s | %(name)-20s | %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
 
-    # Avoid duplicate handlers when setup_logging is called multiple times
-    if logger.handlers:
-        for handler in list(logger.handlers):
-            logger.removeHandler(handler)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(fmt, datefmt))
 
-    logger.propagate = False
-
-    fmt = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-
-    # Console handler
-    ch = logging.StreamHandler()
-    ch.setFormatter(fmt)
-    ch.setLevel(getattr(logging, level.upper(), logging.INFO))
-    logger.addHandler(ch)
-
-    # File handlers
-    fh = logging.FileHandler(LOG_DIR / "isup_bridge.log", encoding="utf-8")
-    fh.setFormatter(fmt)
-    fh.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
-
-    eh = logging.FileHandler(LOG_DIR / "errors.log", encoding="utf-8")
-    eh.setFormatter(fmt)
-    eh.setLevel(logging.ERROR)
-    logger.addHandler(eh)
-
-    return logger
+    root = logging.getLogger()
+    root.setLevel(log_level)
+    root.addHandler(handler)
+    return root

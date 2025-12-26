@@ -1,131 +1,62 @@
-# -*- coding: utf-8 -*-
-"""
-ISUP TCP Server — принимает бинарные пакеты Hikvision ISUP v5,
-передаёт их процессору, отправляет корректный ACK.
-"""
-
 import asyncio
 import logging
-from typing import Optional
+from asyncio import IncompleteReadError
 
 
 class ISUPTCPServer:
-
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        processor,
-        metrics,
-        parser,
-        logger: Optional[logging.Logger] = None,
-    ):
+    def __init__(self, host, port, processor, metrics, parser, logger: logging.Logger):
         self.host = host
         self.port = port
         self.processor = processor
         self.metrics = metrics
         self.parser = parser
-        self.log = logger or logging.getLogger(self.__class__.__name__)
-        self.server: Optional[asyncio.base_events.Server] = None
-
-    # =====================================================================
-    # START SERVER
-    # =====================================================================
+        self.log = logger
+        self.server: asyncio.AbstractServer | None = None
 
     async def start(self):
-        """Запуск TCP-сервера."""
-        self.server = await asyncio.start_server(
-            self.handle_client, self.host, self.port
-        )
-
-        addr = self.server.sockets[0].getsockname()
-        self.log.info(f"🚀 ISUP TCP server listening on {addr[0]}:{addr[1]}")
-
-        async with self.server:
-            await self.server.serve_forever()
-
-    # =====================================================================
-    # STOP SERVER
-    # =====================================================================
+        self.server = await asyncio.start_server(self._handle_client, host=self.host, port=self.port)
+        sockets = self.server.sockets or []
+        for sock in sockets:
+            self.log.info("ISUP TCP listening on %s", sock.getsockname())
 
     async def stop(self):
-        """Остановка сервера."""
         if self.server:
             self.server.close()
             await self.server.wait_closed()
-            self.log.info("🛑 ISUP TCP server stopped")
 
-    # =====================================================================
-    # HANDLE CLIENT
-    # =====================================================================
-
-    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """Обработка подключения контроллера."""
+    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         peer = writer.get_extra_info("peername")
-        ip = peer[0] if peer else "unknown"
-
+        peer_ip = peer[0] if isinstance(peer, tuple) else str(peer)
         self.metrics.connections_total += 1
-        self.log.info(f"🔌 New ISUP connection from {ip}")
+        self.log.info("New ISUP connection from %s", peer_ip)
 
         try:
             while True:
-                try:
-                    data = await asyncio.wait_for(reader.read(4096), timeout=30)
-                except asyncio.TimeoutError:
-                    self.log.info(f"⏳ ISUP timeout from {ip}, closing.")
+                header_bytes = await reader.readexactly(self.parser.HEADER_SIZE)
+                header = self.parser._parse_header(header_bytes)  # type: ignore[attr-defined]
+                if not header:
+                    self.log.warning("Invalid ISUP header from %s", peer_ip)
                     break
 
-                if not data:
-                    self.log.info(f"🔌 Connection from {ip} closed by client")
-                    break
+                body = await reader.readexactly(header.data_length)
+                packet = header_bytes + body
+                await self.processor.process_isup_packet(packet, peer_ip)
 
-                self.metrics.events_received += 1
-                self.metrics.last_event_time = __import__("datetime").datetime.utcnow()
+                if header.data_length == 0:
+                    ack = self.parser.make_heartbeat_ack()
+                else:
+                    ack = self.parser.make_ack(header.sequence_number)
 
-                self.log.debug(f"📥 Received {len(data)} bytes from {ip}")
-
-                # Parse packet
-                event = self.parser.parse(data)
-                if event:
-                    self.metrics.events_parsed += 1
-                    await self.processor.process_isup_packet(data, ip)
-
-                # Send ACK response (always required by ISUP)
-                ack = self._make_ack(event)
                 if ack:
                     writer.write(ack)
                     await writer.drain()
-                    self.log.debug(f"📤 ACK sent to {ip}")
-
-        except Exception as e:
-            self.log.error(f"❌ Error handling client {ip}: {e}")
-
+        except IncompleteReadError:
+            self.log.info("Connection from %s closed", peer_ip)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.log.error("ISUP connection error from %s: %s", peer_ip, exc)
         finally:
+            writer.close()
             try:
-                writer.close()
                 await writer.wait_closed()
-            except:
+            except Exception:
                 pass
-
-            self.log.info(f"🔌 Connection with {ip} closed")
-
-    # =====================================================================
-    # ACK GENERATION
-    # =====================================================================
-
-    def _make_ack(self, event) -> Optional[bytes]:
-        """
-        Формирует бинарный ответ ISUP ACK.
-        Если event == None → heartbeat ACK.
-        """
-
-        try:
-            if not event:
-                # heartbeat response "##" + version=5 + 0x01 + len=0 + zeros + crc
-                return self.parser.make_heartbeat_ack()
-
-            return self.parser.make_ack(event.header.sequence_number)
-
-        except Exception as e:
-            self.log.error(f"ACK build error: {e}")
-            return None

@@ -1,1 +1,1 @@
-"""Package for isup_bridge."""
+# Core package marker

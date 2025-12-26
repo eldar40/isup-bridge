@@ -1,128 +1,50 @@
-# -*- coding: utf-8 -*-
-"""
-Local Storage for Pending Events
-Хранит события, которые не удалось отправить в 1С.
-"""
-
 import json
-import uuid
 import logging
-import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 
 
 class EventStorage:
+    def __init__(self, storage_path: Path, max_pending_days: int, logger: logging.Logger):
+        self.storage_path = storage_path
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.logger = logger
+        self.max_pending_days = max_pending_days
 
-    def __init__(
-        self,
-        directory: str,
-        max_days: int = 30,
-        logger: Optional[logging.Logger] = None,
-    ):
-        self.dir = Path(directory)
-        self.dir.mkdir(parents=True, exist_ok=True)
+    async def save_event(self, event: Dict, tenant_id: str):
+        if not self.storage_path:
+            return
 
-        self.log = logger or logging.getLogger(self.__class__.__name__)
-        self.lock = asyncio.Lock()
-        self.max_days = max_days
-
-    # =====================================================================
-    # SAVE EVENT
-    # =====================================================================
-
-    async def save_pending(self, event: Dict[str, Any]) -> bool:
-        """
-        Сохраняет событие в локальное хранилище.
-        """
-
-        event_id = str(uuid.uuid4())
-        event["_pending_id"] = event_id
-        event["saved_at"] = datetime.now().isoformat()
-
-        filename = self.dir / f"{event_id}.json"
-
+        filename = self.storage_path / f"pending_{tenant_id}_{int(datetime.now().timestamp())}.json"
         try:
-            async with self.lock:
-                with open(filename, "w", encoding="utf-8") as f:
-                    json.dump(event, f, ensure_ascii=False, indent=2)
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(event, f, ensure_ascii=False, indent=2)
+        except Exception as e:  # pragma: no cover - defensive
+            self.logger.error(f"Failed to save pending event: {e}")
 
-            self.log.info(f"💾 Saved pending event: {filename.name}")
-            return True
+    async def get_pending_events(self) -> List[str]:
+        if not self.storage_path.exists():
+            return []
 
-        except Exception as e:
-            self.log.error(f"❌ Error saving pending event: {e}")
-            return False
-
-    # =====================================================================
-    # LOAD ALL EVENTS
-    # =====================================================================
-
-    async def load_all(self) -> List[Dict[str, Any]]:
-        """
-        Загружает все pending-события.
-        """
-
-        events = []
-        files = sorted(self.dir.glob("*.json"))
-
-        for file in files:
+        cutoff = datetime.now() - timedelta(days=self.max_pending_days)
+        pending = []
+        for file_path in self.storage_path.glob("pending_*.json"):
             try:
-                with open(file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    data["_file_path"] = str(file)
-                    events.append(data)
+                ts = int(file_path.stem.split("_")[-1])
+                if datetime.fromtimestamp(ts) >= cutoff:
+                    pending.append(str(file_path))
+                else:
+                    file_path.unlink(missing_ok=True)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.logger.warning(f"Skipping pending file {file_path}: {exc}")
+        return pending
 
-            except Exception as e:
-                self.log.error(f"❌ Error loading {file}: {e}")
-
-        return events
-
-    # =====================================================================
-    # REMOVE EVENT
-    # =====================================================================
-
-    async def remove(self, event: Dict[str, Any]) -> bool:
-        """
-        Удаляет событие после успешной отправки.
-        """
-        path = event.get("_file_path")
-        if not path:
-            return False
-
+    async def delete_event(self, filepath: str):
         try:
-            file_path = Path(path)
-            file_path.unlink()
-            self.log.info(f"🗑 Removed pending event: {file_path.name}")
-            return True
-        except Exception as e:
-            self.log.error(f"❌ Error deleting {path}: {e}")
-            return False
-
-    # =====================================================================
-    # CLEAN OLD FILES
-    # =====================================================================
-
-    async def cleanup_old(self):
-        """
-        Удаляет файлы старше max_days.
-        """
-        cutoff = datetime.now() - timedelta(days=self.max_days)
-
-        for file in self.dir.glob("*.json"):
-            try:
-                ts = datetime.fromtimestamp(file.stat().st_mtime)
-                if ts < cutoff:
-                    file.unlink()
-                    self.log.info(f"🧹 Removed old pending file: {file.name}")
-            except Exception as e:
-                self.log.error(f"Cleanup error for {file}: {e}")
-
-    # =====================================================================
-    # CLOSE STORAGE
-    # =====================================================================
+            Path(filepath).unlink(missing_ok=True)
+        except Exception as e:  # pragma: no cover - defensive
+            self.logger.error(f"Failed to delete pending event file {filepath}: {e}")
 
     async def close(self):
-        """Завершает работу хранилища (очистка старых файлов)."""
-        await self.cleanup_old()
+        pass

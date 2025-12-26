@@ -1,190 +1,88 @@
-# -*- coding: utf-8 -*-
-"""
-ISAPI Webhook Server — полностью переписанная продакшен-версия.
-Поддерживает multipart/form-data, XML, автонастройку устройств.
-"""
-
 import asyncio
-from aiohttp import web
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
-from isapi.isapi_client import ISAPIEventParser
+from aiohttp import web
 
 
-# ============================================================
-# ISAPI Webhook Handler
-# ============================================================
+class ISAPITerminalManager:
+    def __init__(self, cfg: dict):
+        self.terminals_by_ip: Dict[str, Dict[str, Any]] = {}
+        for obj in cfg.get("objects", []):
+            for term in obj.get("terminals", []):
+                ip = term.get("ip") or term.get("host")
+                if ip:
+                    self.terminals_by_ip[ip] = term
+
+    def get_terminal(self, ip: str) -> Optional[Dict[str, Any]]:
+        return self.terminals_by_ip.get(ip)
+
 
 class ISAPIWebhookHandler:
-    """
-    Обработка HTTP POST запросов от терминалов Hikvision по ISAPI.
-    """
-
-    def __init__(self, processor, secret_token: str = None, logger: logging.Logger = None):
+    def __init__(self, processor, secret_token: str | None, logger: logging.Logger):
         self.processor = processor
         self.secret_token = secret_token
-        self.log = logger or logging.getLogger("ISAPIWebhookHandler")
-        self.xml_parser = ISAPIEventParser(self.log)
+        self.log = logger
 
-    # --------------------------------------------------------
-    # Entry for aiohttp server
-    # --------------------------------------------------------
-
-    async def handle(self, request: web.Request):
-        client_ip = request.remote
-        content_type = request.headers.get("Content-Type", "").lower()
-
-        # Optional authentication
+    async def handle(self, request: web.Request) -> web.Response:
         if self.secret_token:
-            if request.headers.get("X-Webhook-Secret") != self.secret_token:
-                self.log.warning(f"Unauthorized webhook request from {client_ip}")
-                return web.json_response({"status": "unauthorized"}, status=401)
+            token = request.headers.get("X-Webhook-Token") or request.query.get("token")
+            if token != self.secret_token:
+                return web.Response(status=403, text="Forbidden")
 
-        # ----------- Multipart (с картинками) ----------------
-        if "multipart" in content_type:
-            return await self._handle_multipart(request, client_ip)
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            self.log.error("Failed to parse webhook payload: %s", exc)
+            return web.Response(status=400, text="Invalid payload")
 
-        # ----------- XML only --------------------------------
-        if "xml" in content_type:
-            body = await request.text()
-            return await self._handle_xml(body, client_ip)
+        asyncio.create_task(self.processor.process_isapi_event(payload, request.remote or "unknown"))
+        return web.json_response({"status": "ok"})
 
-        self.log.warning(f"Unsupported content type: {content_type} from {client_ip}")
-        return web.json_response({"status": "error", "message": "unsupported content type"}, status=400)
-
-    # --------------------------------------------------------
-    # Multipart processing
-    # --------------------------------------------------------
-
-    async def _handle_multipart(self, request: web.Request, client_ip: str):
-        reader = await request.multipart()
-
-        xml_data = None
-        images = {}
-
-        while True:
-            part = await reader.next()
-            if not part:
-                break
-
-            ctype = part.headers.get("Content-Type", "")
-
-            # XML block
-            if "xml" in ctype.lower():
-                xml_data = await part.text()
-
-            # JPEG block
-            elif "jpeg" in ctype.lower() or "jpg" in ctype.lower():
-                filename = part.filename or "image.jpg"
-                data = await part.read()
-                images[filename] = data
-
-        if not xml_data:
-            return web.json_response({"status": "error", "message": "xml not found"}, status=400)
-
-        return await self._process_event(xml_data, images, client_ip)
-
-    # --------------------------------------------------------
-    # XML processing
-    # --------------------------------------------------------
-
-    async def _handle_xml(self, xml_data: str, client_ip: str):
-        return await self._process_event(xml_data, None, client_ip)
-
-    # --------------------------------------------------------
-    # Unified event processing
-    # --------------------------------------------------------
-
-    async def _process_event(self, xml_data: str, images: Optional[Dict[str, bytes]], client_ip: str):
-        event = self.xml_parser.parse(xml_data, images)
-        if not event:
-            self.log.error("Failed to parse ISAPI XML")
-            return web.json_response({"status": "parse_error"}, status=400)
-
-        ok = await self.processor.process_isapi_event(event.to_dict(), client_ip)
-        return web.json_response({"status": "success" if ok else "error"})
-
-
-# ============================================================
-# ISAPI Webhook Server (aiohttp)
-# ============================================================
 
 class ISAPIWebhookServer:
     def __init__(self, handler: ISAPIWebhookHandler, cfg: dict, logger: logging.Logger):
-        self.cfg = cfg.get("isapi", {})
-        self.host = self.cfg.get("host", "0.0.0.0")
-        self.port = self.cfg.get("port", 8082)
         self.handler = handler
+        self.cfg = cfg
         self.log = logger
-        self.runner = None
-        self.http_server = None
-        self.app = None
+        self.runner: Optional[web.AppRunner] = None
+        self.site: Optional[web.TCPSite] = None
+        self.health_runner: Optional[web.AppRunner] = None
+        self.health_site: Optional[web.TCPSite] = None
 
     async def start(self):
-        self.log.info(f"🌐 Запуск ISAPI Webhook Server на {self.host}:{self.port}")
+        app = web.Application()
+        path = self.cfg.get("isapi", {}).get("webhook_path", "/isapi/webhook")
+        app.router.add_post(path, self.handler.handle)
 
-        self.app = web.Application()
-
-        # Webhook endpoint
-        self.app.router.add_post("/", self.handler.handle)
-
-        self.runner = web.AppRunner(self.app)
+        self.runner = web.AppRunner(app)
         await self.runner.setup()
 
-        self.http_server = web.TCPSite(self.runner, self.host, self.port)
-        await self.http_server.start()
+        host = self.cfg.get("isapi", {}).get("host", "0.0.0.0")
+        port = self.cfg.get("isapi", {}).get("port", 8002)
+        self.site = web.TCPSite(self.runner, host=host, port=port)
+        await self.site.start()
+        self.log.info("ISAPI webhook listening on %s:%s%s", host, port, path)
 
-        self.log.info("ISAPI Webhook server started")
-
-    async def start_api(self, host="0.0.0.0", port=8081):
-        """
-        Отдельный health-check / metrics endpoint.
-        """
+    async def start_api(self, host: str = "0.0.0.0", port: int = 8081):
         app = web.Application()
 
         async def health(_):
             return web.json_response({"status": "ok"})
 
         app.router.add_get("/health", health)
-
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, host, port)
-        await site.start()
-
-        self.log.info(f"📊 API /health запущено на {host}:{port}")
+        self.health_runner = web.AppRunner(app)
+        await self.health_runner.setup()
+        self.health_site = web.TCPSite(self.health_runner, host=host, port=port)
+        await self.health_site.start()
+        self.log.info("Health endpoint listening on %s:%s/health", host, port)
 
     async def stop(self):
+        if self.site:
+            await self.site.stop()
         if self.runner:
             await self.runner.cleanup()
-        self.log.info("ISAPI Webhook server stopped")
-
-
-# ============================================================
-# ============================================================
-# ISAPI Terminal Manager
-# ============================================================
-
-class ISAPITerminalManager:
-    """
-    Управляет терминалами и проверяет принадлежность устройства тенанту.
-    """
-
-    def __init__(self, cfg: dict):
-        self.terminals = cfg.get("terminals", [])
-        self.tenant_map = self._map_by_mac()
-
-    def _map_by_mac(self):
-        mapping = {}
-        for t in self.terminals:
-            mac = t.get("mac")
-            tenant = t.get("tenant")
-            if mac:
-                mapping[mac.upper()] = tenant
-        return mapping
-
-    def get_tenant_by_mac(self, mac: str) -> Optional[str]:
-        if not mac:
-            return None
-        return self.tenant_map.get(mac.upper())
+        if self.health_site:
+            await self.health_site.stop()
+        if self.health_runner:
+            await self.health_runner.cleanup()
