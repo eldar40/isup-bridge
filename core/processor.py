@@ -79,7 +79,7 @@ class EventProcessor:
             await self.storage.save_event(event_data, tenant.get("object_id", "unknown"))
 
     async def retry_pending_events(self):
-        self.log.info("Checking pending events...")
+        self.log.debug("Checking pending events...")
         files = await self.storage.get_pending_events()
         for f in files:
             try:

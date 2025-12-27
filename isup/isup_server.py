@@ -17,7 +17,7 @@ class ISUPTCPServer:
         self.server = await asyncio.start_server(self._handle_client, host=self.host, port=self.port)
         sockets = self.server.sockets or []
         for sock in sockets:
-            self.log.info("ISUP TCP listening on %s", sock.getsockname())
+            self.log.debug("ISUP TCP listening on %s", sock.getsockname())
 
     async def stop(self):
         if self.server:

@@ -52,7 +52,7 @@ async def _periodic_pending(processor: EventProcessor, stop_event: asyncio.Event
 async def main():
     cfg, cfg_dict = ServerConfig.load(CONFIG_PATH)
     logger = setup_logging(cfg.log_level)
-    logger.info("🚀 ISUP/ISAPI Bridge starting...")
+    logger.debug("🚀 ISUP/ISAPI Bridge starting...")
 
     metrics = ServerMetrics()
     storage = EventStorage(cfg.storage_path, cfg.max_pending_days, logger)

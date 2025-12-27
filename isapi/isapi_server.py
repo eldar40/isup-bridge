@@ -420,7 +420,7 @@ class ISAPIWebhookServer:
         self.site = web.TCPSite(self.runner, self.host, self.port)
         await self.site.start()
 
-        self.log.info("ISAPI Webhook server started on %s:%s", self.host, self.port)
+        self.log.debug("ISAPI Webhook server started on %s:%s", self.host, self.port)
 
     async def stop(self):
         if self.runner:
@@ -442,7 +442,7 @@ class ISAPIWebhookServer:
         await runner.setup()
         site = web.TCPSite(runner, host, port)
         await site.start()
-        self.log.info("Health endpoint started on %s:%s", host, port)
+        self.log.debug("Health endpoint started on %s:%s", host, port)
 
 
 # ============================================================================
