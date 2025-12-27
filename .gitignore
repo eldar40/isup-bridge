@@ -5,3 +5,13 @@ __pycache__/
 *.pyc
 *.pyo
 *.backup
+
+# Virtual Environment
+.venv/
+venv/
+
+# Secrets
+config/config.yaml
+
+# IDE
+.vscode/
