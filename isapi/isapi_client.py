@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-ISAPI Client & Parser — версия для Python 3.10+ с корректным Digest Auth (RFC 7616) и парсингом событий.
+ISAPI Client & Parser
 
-Важно:
-- Hikvision ISAPI требует Digest Authentication и ссылается на RFC 7616 :contentReference[oaicite:3]{index=3}
-- aiohttp не предоставляет готовый DigestAuth как часть публичного API.
-  Поэтому реализуем Digest (qop=auth) сами и делаем transparent retry на 401 challenge.
+Includes:
+- ISAPIEventParser: parses <EventNotificationAlert> XML into normalized ISAPIEvent
+- DigestAuth (RFC 7616): minimal production-grade Digest auth helper (qop=auth)
+- ISAPIDeviceClient: async client for configuring devices (httpHosts / event trigger, etc.)
+
+Notes:
+- Hikvision firmwares commonly require Digest Auth (RFC 7616), Basic is often rejected.
+- aiohttp does not provide a stable public DigestAuth helper, so we implement it.
 """
 
 import hashlib
@@ -21,14 +25,13 @@ import aiohttp
 import xml.etree.ElementTree as ET
 
 
-# ============================================================
+# ============================================================================
 # ISAPI Event Structures
-# ============================================================
+# ============================================================================
 
-@dataclass
 class ISAPIEvent:
     """
-    Унифицированная структура ISAPI-события.
+    Normalized ISAPI event for downstream processing.
     """
     def __init__(
         self,
@@ -47,7 +50,7 @@ class ISAPIEvent:
         minor_event_type: Optional[str],
         success: bool,
         image_ids: Optional[list],
-        raw_xml: str
+        raw_xml: str,
     ):
         self.event_type = event_type
         self.event_state = event_state
@@ -72,30 +75,42 @@ class ISAPIEvent:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "event_type": self.event_type,
+            "event_state": self.event_state,
             "device_id": self.device_id,
+            "mac": self.mac_address,
+            "ip": self.ip_address,
             "timestamp": self.timestamp,
             "card": self.card_number,
             "employee": self.employee_number,
             "door_id": self.door_id,
             "reader_id": self.reader_id,
             "direction": self.direction,
-            "success": self.success
+            "major_event_type": self.major_event_type,
+            "minor_event_type": self.minor_event_type,
+            "success": self.success,
+            "images": self.image_ids,
         }
 
 
 class ISAPIEventParser:
     """
-    Разбор XML <EventNotificationAlert> в единый формат ISAPIEvent.
+    Parses XML payloads from Hikvision ISAPI notifications.
+    Focus: AccessControllerEvent embedded in EventNotificationAlert.
     """
-
     def __init__(self, logger: Optional[logging.Logger] = None):
-        self.log = logger or logging.getLogger("ISAPIEventParser")
+        self.log = logger or logging.getLogger("isapi.parser")
 
-    def parse(self, xml_text: str, images=None) -> Optional[ISAPIEvent]:
+    def parse(self, xml_text: str, images: Optional[Dict[str, bytes]] = None) -> Optional[ISAPIEvent]:
+        if not xml_text:
+            return None
+
+        xml_text = xml_text.strip()
+        if not xml_text:
+            return None
+
         try:
             root = ET.fromstring(xml_text)
         except Exception as e:
-            # Ошибка парсинга — это не обязательно "авария", устройства иногда шлют неожиданные payload.
             self.log.warning("ISAPI XML parse error: %s", e)
             return None
 
@@ -120,14 +135,14 @@ class ISAPIEventParser:
         success = False
 
         if access_node is not None:
-            card_no = access_node.findtext("cardNo")
+            card_no = access_node.findtext("cardNo") or access_node.findtext("cardNoHex")
             employee_no = access_node.findtext("employeeNo")
             door_id = access_node.findtext("doorID")
             reader_id = access_node.findtext("readerID")
             major_event_type = access_node.findtext("majorEventType")
             minor_event_type = access_node.findtext("minorEventType")
 
-            # Direction heuristic: often odd=IN, even=OUT for some deployments.
+            # Direction heuristic (project-specific)
             try:
                 if reader_id:
                     rid = int(reader_id)
@@ -135,7 +150,8 @@ class ISAPIEventParser:
             except Exception:
                 direction = "UNKNOWN"
 
-            # Success heuristic (project-specific; adjust to your event dictionary if needed)
+            # Success heuristic (adjust according to your event dictionary)
+            # Some devices use "1" for success; others use boolean-ish fields.
             success = (minor_event_type == "1")
 
         image_ids = list(images.keys()) if images else []
@@ -156,19 +172,20 @@ class ISAPIEventParser:
             minor_event_type=minor_event_type,
             success=success,
             image_ids=image_ids,
-            raw_xml=xml_text
+            raw_xml=xml_text,
         )
 
 
-# ============================================================
-# Digest Auth (RFC 7616) — minimal, production-friendly
-# ============================================================
+# ============================================================================
+# Digest Auth (RFC 7616)
+# ============================================================================
 
 _TOKEN_RE = re.compile(r'(\w+)=(".*?"|[^,]+)')
 
+
 def _parse_www_authenticate(header_value: str) -> Dict[str, str]:
     """
-    Parse WWW-Authenticate: Digest realm="...", nonce="...", qop="auth", algorithm=MD5, opaque="..."
+    Parse: WWW-Authenticate: Digest realm="...", nonce="...", qop="auth", algorithm=MD5, opaque="..."
     """
     if not header_value:
         return {}
@@ -191,23 +208,20 @@ def _hash(algorithm: str, data: str) -> str:
         return hashlib.md5(data.encode("utf-8")).hexdigest()
     if algo in ("SHA-256", "SHA-256-SESS"):
         return hashlib.sha256(data.encode("utf-8")).hexdigest()
-    # Fallback to MD5 for compatibility
+    # fallback
     return hashlib.md5(data.encode("utf-8")).hexdigest()
 
 
 class DigestAuth:
     """
     RFC 7616 Digest auth helper.
-
-    Поддержка:
-    - algorithm: MD5 / MD5-sess / SHA-256 / SHA-256-sess
-    - qop: auth (наиболее типично для Hikvision)
+    Supports qop=auth and algorithms: MD5 / MD5-sess / SHA-256 / SHA-256-sess.
     """
 
     def __init__(self, username: str, password: str, logger: Optional[logging.Logger] = None):
         self.username = username
         self.password = password
-        self.log = logger or logging.getLogger("DigestAuth")
+        self.log = logger or logging.getLogger("isapi.digest")
 
         self.realm: Optional[str] = None
         self.nonce: Optional[str] = None
@@ -215,8 +229,8 @@ class DigestAuth:
         self.algorithm: str = "MD5"
         self.qop: Optional[str] = None
 
-        self._nc = 0  # nonce-count
-        self._cnonce = None
+        self._nc = 0
+        self._cnonce: Optional[str] = None
 
     def _new_cnonce(self) -> str:
         return os.urandom(8).hex()
@@ -224,11 +238,10 @@ class DigestAuth:
     def _select_qop(self, qop_value: Optional[str]) -> Optional[str]:
         if not qop_value:
             return None
-        # could be: "auth,auth-int"
         items = [x.strip() for x in qop_value.split(",") if x.strip()]
         if "auth" in items:
             return "auth"
-        # not implementing auth-int here; can be added if device requires it
+        # Not implementing auth-int by default; can be extended if a device requires it.
         return items[0] if items else None
 
     def update_from_challenge(self, www_authenticate: str) -> bool:
@@ -245,14 +258,12 @@ class DigestAuth:
         self.qop = self._select_qop(params.get("qop"))
 
         if stale:
-            # nonce is stale, reset nonce count
             self._nc = 0
-
         return True
 
     def build_authorization_header(self, method: str, url: str) -> str:
         if not (self.realm and self.nonce):
-            raise RuntimeError("DigestAuth not initialized with challenge")
+            raise RuntimeError("DigestAuth not initialized from server challenge")
 
         parsed = urlparse(url)
         uri = parsed.path or "/"
@@ -264,22 +275,20 @@ class DigestAuth:
         cnonce = self._cnonce or self._new_cnonce()
         self._cnonce = cnonce
 
-        qop = self.qop  # usually "auth"
+        qop = self.qop
         alg = self.algorithm
 
         ha1 = _hash(alg, f"{self.username}:{self.realm}:{self.password}")
         if alg.endswith("-SESS"):
             ha1 = _hash(alg, f"{ha1}:{self.nonce}:{cnonce}")
 
-        ha2 = _hash(alg, f"{method}:{uri}")
+        ha2 = _hash(alg, f"{method.upper()}:{uri}")
 
         if qop:
             response = _hash(alg, f"{ha1}:{self.nonce}:{nc_value}:{cnonce}:{qop}:{ha2}")
         else:
             response = _hash(alg, f"{ha1}:{self.nonce}:{ha2}")
 
-        # Compose header
-        # Note: RFC 7616 allows token/quoted-string. We quote most fields for compatibility.
         items = [
             f'username="{self.username}"',
             f'realm="{self.realm}"',
@@ -292,16 +301,16 @@ class DigestAuth:
         if alg:
             items.append(f"algorithm={alg}")
         if qop:
-            items.append(f'qop={qop}')
-            items.append(f'nc={nc_value}')
+            items.append(f"qop={qop}")
+            items.append(f"nc={nc_value}")
             items.append(f'cnonce="{cnonce}"')
 
         return "Digest " + ", ".join(items)
 
 
-# ============================================================
-# ISAPI Device HTTP client
-# ============================================================
+# ============================================================================
+# ISAPI Device Client
+# ============================================================================
 
 @dataclass
 class DeviceInfo:
@@ -311,36 +320,28 @@ class DeviceInfo:
 
 class ISAPIDeviceClient:
     """
-    Lightweight async client for configuring Hikvision terminals over ISAPI with RFC7616 Digest.
-
-    Strategy:
-    - First request may return 401 with WWW-Authenticate: Digest ...
-    - We parse challenge and transparently retry with Authorization header.
+    Async client for Hikvision ISAPI device configuration with RFC7616 Digest.
+    Transparent retry on 401 Digest challenge.
     """
 
-    def __init__(self, host: str, port: int, username: str, password: str, logger: logging.Logger):
+    def __init__(self, host: str, port: int, username: str, password: str, logger: Optional[logging.Logger] = None):
         self.host = host
-        self.port = port
-        self.base_url = f"http://{host}:{port}"
-        self.log = logger
+        self.port = int(port)
+        self.base_url = f"http://{host}:{self.port}"
+        self.log = logger or logging.getLogger("isapi.client")
 
         self._digest = DigestAuth(username or "", password or "", logger=self.log)
-        self._owned_session = True
         self.session = aiohttp.ClientSession()
 
     async def close(self):
-        if self._owned_session and self.session and not self.session.closed:
+        if self.session and not self.session.closed:
             await self.session.close()
 
     async def _request(self, method: str, url: str, **kwargs) -> aiohttp.ClientResponse:
         """
-        Perform request with Digest auth retry.
-        Returns aiohttp response (caller must read body inside context OR ensure closing).
+        Performs request with Digest auth retry.
         """
-        # Ensure we don't pass aiohttp auth kwarg (we do Digest ourselves)
-        kwargs.pop("auth", None)
-
-        # First attempt (may 401)
+        kwargs.pop("auth", None)  # ensure we don't pass aiohttp auth
         resp = await self.session.request(method, url, **kwargs)
         if resp.status != 401:
             return resp
@@ -349,14 +350,13 @@ class ISAPIDeviceClient:
         await resp.release()
 
         if not www_auth or "digest" not in www_auth.lower():
-            return resp  # not digest challenge
+            return resp
 
         if not self._digest.update_from_challenge(www_auth):
             return resp
 
-        # Retry with Authorization header
         headers = dict(kwargs.get("headers") or {})
-        headers["Authorization"] = self._digest.build_authorization_header(method.upper(), url)
+        headers["Authorization"] = self._digest.build_authorization_header(method, url)
         kwargs["headers"] = headers
 
         return await self.session.request(method, url, **kwargs)
@@ -364,10 +364,8 @@ class ISAPIDeviceClient:
     async def is_reachable(self) -> bool:
         url = f"{self.base_url}/ISAPI/System/deviceInfo"
         try:
-            timeout = aiohttp.ClientTimeout(total=3)
-            resp = await self._request("GET", url, timeout=timeout)
+            resp = await self._request("GET", url, timeout=aiohttp.ClientTimeout(total=3))
             await resp.release()
-            # 401 после ретрая тоже возможно при неверных кредах; но сеть/хост reachable
             return resp.status < 500
         except Exception:
             return False
@@ -379,48 +377,53 @@ class ISAPIDeviceClient:
             async with resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    self.log.error("Failed to read deviceInfo from %s (HTTP %s): %s", self.host, resp.status, body)
+                    self.log.error("deviceInfo failed %s HTTP %s: %s", self.host, resp.status, body)
                     return None
                 xml = await resp.text()
         except Exception as e:
-            self.log.error("deviceInfo request failed for %s: %s", self.host, e)
+            self.log.error("deviceInfo request error %s: %s", self.host, e)
             return None
 
         try:
             root = ET.fromstring(xml)
-            device_id = root.findtext("deviceID")
-            model = root.findtext("model")
-            return DeviceInfo(device_id=device_id, model=model)
+            return DeviceInfo(
+                device_id=root.findtext("deviceID"),
+                model=root.findtext("model"),
+            )
         except Exception as e:
-            self.log.error("Failed to parse deviceInfo for %s: %s", self.host, e)
+            self.log.error("deviceInfo parse error %s: %s", self.host, e)
             return None
 
-    # ----------------------------------------------------------------
-    # HTTP host configuration
-    # ----------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # httpHost configuration
+    # ---------------------------------------------------------------------
+
     def build_http_host_payload(self, callback_url: str, host_id: int = 1) -> str:
         parsed = urlsplit(callback_url)
         ip_addr = parsed.hostname or ""
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
 
         payload = f"""
 <HttpHostNotification version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
-    <id>{host_id}</id>
-    <enabled>true</enabled>
-    <addressingFormatType>ipaddress</addressingFormatType>
-    <ipAddress>{ip_addr}</ipAddress>
-    <portNo>{port}</portNo>
-    <protocolType>HTTP</protocolType>
-    <url>{path}</url>
-    <httpAuthenticationMethod>digest</httpAuthenticationMethod>
+  <id>{host_id}</id>
+  <enabled>true</enabled>
+  <addressingFormatType>ipaddress</addressingFormatType>
+  <ipAddress>{ip_addr}</ipAddress>
+  <portNo>{port}</portNo>
+  <protocolType>HTTP</protocolType>
+  <url>{path}</url>
+  <httpAuthenticationMethod>digest</httpAuthenticationMethod>
 </HttpHostNotification>
-"""
-        return payload.strip()
+""".strip()
+        return payload
 
     async def configure_http_host(self, callback_url: str, host_id: int = 1) -> bool:
-        payload = self.build_http_host_payload(callback_url, host_id)
         url = f"{self.base_url}/ISAPI/Event/notification/httpHosts/{host_id}"
+        payload = self.build_http_host_payload(callback_url, host_id)
+
         try:
             resp = await self._request(
                 "PUT",
@@ -431,40 +434,46 @@ class ISAPIDeviceClient:
             )
             async with resp:
                 if resp.status in (200, 201, 204):
-                    self.log.info("HTTP host notification configured for %s", self.host)
+                    self.log.info("Configured httpHost on %s (id=%s)", self.host, host_id)
                     return True
                 body = await resp.text()
-                self.log.error("Failed to configure httpHost on %s: HTTP %s → %s", self.host, resp.status, body)
+                self.log.error("Configure httpHost failed %s HTTP %s: %s", self.host, resp.status, body)
                 return False
         except Exception as e:
-            self.log.error("Error configuring httpHost on %s: %s", self.host, e)
+            self.log.error("Configure httpHost error %s: %s", self.host, e)
             return False
 
-    # ----------------------------------------------------------------
-    # Event enabling
-    # ----------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Event trigger enabling
+    # ---------------------------------------------------------------------
+
     def build_event_subscription_payload(self, event_types: Sequence[str], host_id: int = 1) -> str:
-        entries = "\n".join(
-            f"    <EventTriggerNotification>\n"
-            f"        <id>{idx + 1}</id>\n"
-            f"        <eventType>{evt}</eventType>\n"
-            f"        <eventDescription>auto</eventDescription>\n"
-            f"        <protocolType>HTTP</protocolType>\n"
-            f"        <httpHostId>{host_id}</httpHostId>\n"
-            f"        <triggerState>true</triggerState>\n"
-            f"    </EventTriggerNotification>"
-            for idx, evt in enumerate(event_types)
-        )
+        entries = []
+        for idx, evt in enumerate(event_types, start=1):
+            entries.append(
+                f"""
+  <EventTriggerNotification>
+    <id>{idx}</id>
+    <eventType>{evt}</eventType>
+    <eventDescription>auto</eventDescription>
+    <protocolType>HTTP</protocolType>
+    <httpHostId>{host_id}</httpHostId>
+    <triggerState>true</triggerState>
+  </EventTriggerNotification>
+""".rstrip()
+            )
+
         payload = f"""
 <EventTriggerNotificationList version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
-{entries}
+{''.join(entries)}
 </EventTriggerNotificationList>
-"""
-        return payload.strip()
+""".strip()
+        return payload
 
     async def enable_events(self, event_types: Sequence[str], host_id: int = 1) -> bool:
-        payload = self.build_event_subscription_payload(event_types, host_id)
         url = f"{self.base_url}/ISAPI/Event/notification/trigger"
+        payload = self.build_event_subscription_payload(event_types, host_id)
+
         try:
             resp = await self._request(
                 "PUT",
@@ -475,11 +484,11 @@ class ISAPIDeviceClient:
             )
             async with resp:
                 if resp.status in (200, 201, 204):
-                    self.log.info("Enabled event types on %s: %s", self.host, ",".join(event_types))
+                    self.log.info("Enabled events on %s: %s", self.host, ",".join(event_types))
                     return True
                 body = await resp.text()
-                self.log.error("Failed to enable events on %s: HTTP %s → %s", self.host, resp.status, body)
+                self.log.error("Enable events failed %s HTTP %s: %s", self.host, resp.status, body)
                 return False
         except Exception as e:
-            self.log.error("Error enabling events on %s: %s", self.host, e)
+            self.log.error("Enable events error %s: %s", self.host, e)
             return False
