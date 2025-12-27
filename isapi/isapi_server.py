@@ -5,7 +5,6 @@ ISAPI Webhook Server — полностью переписанная прода�
 
 import asyncio
 from aiohttp import web
-from aiohttp.multipart import BodyPartReader
 import logging
 from typing import Dict, Any, Optional, List
 
@@ -51,7 +50,6 @@ class ISAPIWebhookHandler:
 
         # ----------- Generic Heartbeat (пустые пакеты) -------
         # Иногда устройства шлют пустые пакеты без явного content-type или с другим
-        # Читаем тело, если пустое - возвращаем 200 OK
         raw_body = await request.text()
         if not raw_body or not raw_body.strip():
             self.log.debug(f"Received empty heartbeat packet from {client_ip}")
@@ -87,8 +85,17 @@ class ISAPIWebhookHandler:
                 data = await part.read()  # type: ignore
                 images[filename] = data
 
+        # <ИСПРАВЛЕНИЕ> Обработка Multipart Heartbeat
+        # Устройства Hikvision часто шлют пустые multipart пакеты (только boundary-строки).
+        # Если нет ни XML, ни картинок — считаем это пустым пакетом (heartbeat) и отвечаем OK.
+        if not xml_data and not images:
+            self.log.debug(f"Received empty multipart (heartbeat) from {client_ip}")
+            return web.Response(status=200, text="OK")
+        # </ИСПРАВЛЕНИЕ>
+
         if not xml_data:
-            self.log.warning("Multipart received without XML part from %s", client_ip)
+            # Если картинки есть, а XML нет - это ошибка пакета (по спецификации ISAPI данные всегда в XML)
+            self.log.warning("Multipart received with images but no XML from %s", client_ip)
             return web.json_response({"status": "error", "message": "xml not found"}, status=400)
 
         return await self._process_event(xml_data, images, client_ip)
